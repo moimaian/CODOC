@@ -30,6 +30,6 @@ Download the Vina and Vina-split run files and transfer them both to the bin fol
 $ cd ~/Downloads && mv "vina_1.2.5_linux_x86_64.sh" "$HOME/MGLTools-1.5.7/bin/"
 
 # **DIRECTORY ORGANIZATION:**
-Create a working folder inside the "$HOME/MGLTools-1.5.7" folder called just "doc", that is, you must have the address: "$HOME/MGLTools-1.5.7/doc". Inside this doc folder create two folders: LIGANDS and TARGETS. Leave only your codoc.sh script out of them.
+Create a working folder inside the "$HOME/MGLTools-1.5.7" folder called just "doc", that is, you must have the address: "$HOME/MGLTools-1.5.7/doc". Inside this doc folder create two folders: LIGANDS and TARGETS. Your codoc.sh script stay in $HOME/MGLTools-1.5.7/doc.
 
 Ready! Enjoy! I hope it is useful in your work!
