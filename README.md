@@ -16,7 +16,8 @@ $ chmod +x ./codoc.sh
 
 Installation instructions and directory organization:
 MGL Tools 1.5.7:
-Executing the file downloaded from the link, the Autodock tool must be installed in your home folder, that is, in the $HOME variable. It is important that this variable is configured among the PATH environment variables. Check in the terminal by running:
+Executing the file downloaded from the link, the Autodock tool must be installed in your home folder, that is, in the "$HOME" variable. 
+It is important that this variable is configured among the PATH environment variables. Check in the terminal by running:
 $ echo $HOME
 Something like this should appear as a result: "/home/your_user_name"
 
