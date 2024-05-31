@@ -1,4 +1,4 @@
-**This is a tool to automate the virtual screening process by preparing ligands using Open babel 3.1.1 and executing molecular docking calculations using AutoDock Vina 1.2.5.
+**This is a tool to automate the virtual screening process by preparing ligands using Open babel 3.0.0 and executing molecular docking calculations using AutoDock Vina 1.2.5.
 This tool was written in Bash to run on a Linux terminal.**
 
 For every executable in Linux, permission must be given to run as a program. This is possible graphically in a file manager like Nemo
@@ -11,7 +11,7 @@ $ chmod +x ./codoc.sh
 
 # **PREREQUISITES:**
 - MGL Tools 1.5.7: https://ccsb.scripps.edu/mgltools/downloads/
-- OpenBabel 3.1.1: https://github.com/openbabel/openbabel
+- OpenBabel 3.0.0: https://github.com/openbabel/openbabel/releases/tag/openbabel-3-0-0
 - AutoDock Vina: https://github.com/ccsb-scripps/AutoDock-Vina/releases
 
 Installation instructions and directory organization:
@@ -20,16 +20,23 @@ Executing the file downloaded from the link, the Autodock tool must be installed
 $ echo $HOME
 Something like this should appear as a result: "/home/your_user_name"
 
-OpenBabel 3.1.1:
+OpenBabel 3.0.0:
 I recommend installing OpenBabel from your Linux distribution's own application store. It is important that the obabel variable is also among the PATH environment variables. Check in the terminal by running:
 $ obabel -V
-Expected response, something like: Open Babel 3.1.1 -- Feb 7 2022 -- 06:51:49
+Expected response, something like: Open Babel 3.0.0 -- May 30 2024 -- 19:19:04
+You can install by compiling the codes downloaded from the link using the commands:
+tar -xvjf ~/Downloads/openbabel-3.0.0-source.tar.bz2 -C ~/
+cd ~/openbabel-3.0.0
+mkdir build && cd build
+cmake ..
+make -j2
+make test
+sudo make install
 
 AutoDock Vina:
-Download the Vina and Vina-split run files and transfer them both to the bin folder inside MGLTools in $HOME/MGLTools-1.5.7/bin via your file manager or Use the command in the terminal:
-$ cd ~/Downloads && mv "vina_1.2.5_linux_x86_64.sh" "$HOME/MGLTools-1.5.7/bin/"
+They are provided here and should be downloaded together to the same folder where CODOC.sh is located.
 
 # **DIRECTORY ORGANIZATION:**
-Create a working folder inside the "$HOME/MGLTools-1.5.7" folder called just "doc", that is, you must have the address: "$HOME/MGLTools-1.5.7/doc". Inside this doc folder create two folders: LIGANDS and TARGETS. Your codoc.sh script stay in $HOME/MGLTools-1.5.7/doc.
+Inside the folder where CODOC.sh and the vina and vina-split executables are located, there should be two folders: LIGANDS and TARGETS.
 
 Ready! Enjoy! I hope it is useful in your work!
