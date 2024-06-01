@@ -15,7 +15,7 @@ $ chmod +x ./codoc.sh
 - OpenBabel 3.0.0: https://github.com/openbabel/openbabel/releases/tag/openbabel-3-0-0
 - AutoDock Vina: https://github.com/ccsb-scripps/AutoDock-Vina/releases
 
-Installation instructions and directory organization:
+# **INSTALLATION INSTRUCTIONS:**
 Download all content to an appropriate working directory. Something like $HOME/doc.
 
 MGL Tools 1.5.7:
