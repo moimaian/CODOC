@@ -42,5 +42,6 @@ They are provided here and should be downloaded together to the same folder wher
 
 # **DIRECTORY ORGANIZATION:**
 Inside the folder where CODOC.sh and the vina and vina-split executables are located, there should be two folders: LIGANDS and TARGETS.
+You must add multi-model files within the LIGANDS folder and single molecule files must be placed in subfolders containing an acronym that identifies the database (Ex.: ZINC_FDA, ZINC_NP, CHEMBL, COCONUT, ATLAS, CMNPD, IBIS... ). Each subfolder present within the LIGANDS directory must contain a single file format such as: .sdf, .smi, .mol2, .pdb or .pdbqt.
 
 Ready! Enjoy! I hope it is useful in your work!
