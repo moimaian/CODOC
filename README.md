@@ -8,7 +8,7 @@ For every executable in Linux, permission must be given to run as a program. Thi
 - Check the box to allow execution as a program.
 
 Or using the command in the terminal:
-$ chmod +x ./codoc.sh
+$ chmod +x ./CODOC.sh
 
 # **PREREQUISITES:**
 - MGL Tools 1.5.7: https://ccsb.scripps.edu/mgltools/downloads/
