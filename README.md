@@ -1,4 +1,4 @@
-**This is a tool to automate the virtual screening process by preparing ligands using Open babel 3.0.0 and executing molecular docking calculations using AutoDock Vina 1.2.5.
+**This is a tool to automate the virtual screening process by preparing ligands using Open babel 3.0.0 and executing molecular docking calculations using AutoDock Vina 1.2.5 or AutoDock Vina-GPU 2.1.
 This tool was written in Bash to run on a Linux terminal.**
 
 For every executable in Linux, permission must be given to run as a program. This is possible graphically in a file manager like Nemo
@@ -11,10 +11,13 @@ $ chmod +x ./codoc.sh
 
 # **PREREQUISITES:**
 - MGL Tools 1.5.7: https://ccsb.scripps.edu/mgltools/downloads/
+  (For preparing the protein and grid file)
 - OpenBabel 3.0.0: https://github.com/openbabel/openbabel/releases/tag/openbabel-3-0-0
 - AutoDock Vina: https://github.com/ccsb-scripps/AutoDock-Vina/releases
 
 Installation instructions and directory organization:
+Download all content to an appropriate working directory. Something like $HOME/doc.
+
 MGL Tools 1.5.7:
 Executing the file downloaded from the link, the Autodock tool must be installed in your home folder, that is, in the "$HOME" variable. 
 It is important that this variable is configured among the PATH environment variables. Check in the terminal by running:
