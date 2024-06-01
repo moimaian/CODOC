@@ -2,10 +2,11 @@
 This tool was written in Bash to run on a Linux terminal.**
 
 For every executable in Linux, permission must be given to run as a program. This is possible graphically in a file manager like Nemo
-- Right-click on the program (example the codoc.sh bash script)
+- Right-click on the program (CODOC.sh bash script)
 - In the menu select properties
 - In the opened window select permissions
-- Check the box to allow execution as a program
+- Check the box to allow execution as a program.
+
 Or using the command in the terminal:
 $ chmod +x ./codoc.sh
 
