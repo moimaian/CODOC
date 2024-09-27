@@ -1,381 +1,2119 @@
 #!/bin/bash
 #################################################################################################################################
-#                                               CODOC VERSION 1.1.1:                                                            #
-#                                      Developed by Moisés Maia Neto - 06/2024                                                  #
+#                                               CODOC VERSION 1.0:                                                              #
+#                                                   26/09/2024                                                                  #
 #################################################################################################################################
-# Identifying the directory where the CODOC is located and checking the TARGETS and LIGANDS directories.
+
+#################################################################################################################################
+#                                               CODOC STARTUP PROCEDURES:                                                       #
+#################################################################################################################################
+# Create current data variable:
+current_date=$(date +"%d_%m_%Y")
+
+# Identifying the working directory where CODOC is located:
 CURRENT_DIR=$(dirname "${BASH_SOURCE[0]}")
 cd $CURRENT_DIR
 CODOC_DIR=$(pwd)
-if [ -d "LIGANDS" ]; then
-    echo "LIGANDS FOLDER IS PRESENT!"
+
+# Create a LOG file:
+LOGFILE="/tmp/codoc_$current_date.log"
+exec > >(tee -a "$LOGFILE") 2>&1
+
+# CHECK IF YAD IS INSTALLED:
+if command -v yad &> /dev/null; then
+    echo "yad CHECK !"
+else
+    echo "yad is not installed. Installing..."
+
+    # Detect the distribution and install yad
+    if [ -f /etc/debian_version ]; then
+        # Debian-based distributions (Ubuntu, Debian, Linux Mint, etc.)
+        sudo -S apt-get update
+        sudo -S apt-get install -y yad
+    elif [ -f /etc/redhat-release ]; then
+        # Red Hat-based distributions (Fedora, CentOS, etc.)
+        sudo -S dnf install -y yad
     else
-        dialog --title "ATTENTION" --msgbox "THE DIRECTORY CONTAINING THE TARGETS IS MISSING. CREATE A DIRECTORY CALLED "TARGETS"!" 10 60 ;
+        echo "Unsupported Linux distribution. Please install yad manually."
+        exit 1
     fi
-if [ -d "TARGETS" ]; then
-    echo "TARGETS FOLDER IS PRESENT!"
+fi
+
+# OPEN START WINDOW:
+for ((i=1; i<=100; i++)) {
+    echo $i
+    echo "# $((i))%"
+    sleep 0.035
+} | yad --splash --progress \
+  --image=$CODOC_DIR/icons/START.png \
+  --auto-close \
+  --skip-taskbar \
+  --center --image-on-top\
+  --no-buttons
+
+# CHECK THE EXISTENCE OF THE ESSENTIAL FOLDERS:
+if [ -d "LIGANDS" ]; then
+    echo "LIGANDS FOLDER CHECK !"
     else
-        dialog --title "ATTENTION" --msgbox "THE DIRECTORY CONTAINING THE LIGANDS IS MISSING. CREATE A DIRECTORY CALLED "LIGANDS"!" 10 60 ;
+        yad --center --title="CODOC - INFORMATION !" \
+            --width=500 --borders=10 \
+            --text="\n \nTHE DIRECTORY CONTAINING THE 'LIGANDS' IS MISSING! \nA DIRECTORY CALLED LIGANDS WILL BE CREATED!" \
+            --text-align=center \
+            --button="OK":0 --buttons-layout=edge \
+            --image=$CODOC_DIR/icons/attentionP.png 
+
+        if [ $? -eq 0 ]; then
+            mkdir -p $CODOC_DIR/LIGANDS
+        fi
+fi
+if [ -d "TARGETS" ]; then
+    echo "TARGETS FOLDER CHECK !"
+    else
+        yad --center --title="CODOC - INFORMATION !" \
+            --width=500 --borders=10 \
+            --text="\n \nTHE DIRECTORY CONTAINING THE 'TARGETS' IS MISSING! \nA DIRECTORY CALLED TARGETS WILL BE CREATED!" \
+            --text-align=center \
+            --button="OK":0 --buttons-layout=edge \
+            --image=$CODOC_DIR/icons/attentionP.png
+
+        if [ $? -eq 0 ]; then
+            mkdir -p $CODOC_DIR/TARGETS
+        fi
+fi
+if [ -d "bin" ]; then
+    echo "BIN FOLDER CHECK !"
+    else
+        yad --center --title="CODOC - INFORMATION !" \
+            --width=500 --borders=10 \
+            --text="\n \nTHE DIRECTORY CONTAINING THE 'BIN' IS MISSING! \nA DIRECTORY CALLED BIN WILL BE CREATED!" \
+            --text-align=center \
+            --button="OK":0 --buttons-layout=edge \
+            --image=$CODOC_DIR/icons/attentionP.png 
+
+        if [ $? -eq 0 ]; then
+            mkdir -p $CODOC_DIR/bin
+        fi
 fi
 
 # Predefined global access address variables:
-current_date=$(date +"%d_%m_%Y")
+tag=" C O D O C - A AUTOMATIZED MULTI-TARGET DOCKING TOOL"
+CODOC_NAME="CODOC"
+CODOC_ICON="${CODOC_DIR}/icons/logo_codocP.png"
+CODOC_EXEC="${CODOC_DIR}/CODOC.sh"
+MENU_FILE="/usr/share/applications/${CODOC_NAME}.desktop"
 ligands="$CODOC_DIR/LIGANDS"
 targets="$CODOC_DIR/TARGETS"
 data="$CODOC_DIR/.form_data.txt"
-vina="$CODOC_DIR/vina_1.2.5_linux_x86_64"
-vina_split="$CODOC_DIR/vina_split_1.2.5_linux_x86_64"
-vina_GPU_dir="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1/"
+vina="$CODOC_DIR/bin/vina_1.2.5_linux_x86_64"
+vina_split="$CODOC_DIR/bin/vina_split_1.2.5_linux_x86_64"
+BOOST_VERSION="1.84.0"
+BOOST_DIR="$HOME"/boost_"${BOOST_VERSION//./_}"
+VINAGPU_DIR="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1"
 vina_GPU="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1/AutoDock-Vina-GPU-2-1"
-opencl="/usr/local/cuda/lib64"
+prepare_receptor=""$HOME"/ADFRsuite-1.0/bin/prepare_receptor"
+opencl="/usr/local/cuda"
+results="$CODOC_DIR/RESULTS"
+ligands_results="$CODOC_DIR/LIGANDS_RESULTS"
+failure_dir="$ligands_results/CONVERSION_FAILURES"
+canceled="$ligands_results/CANCELED_JOBS"
+CoGen3D="$CODOC_DIR/bin/CoGen3D.py"
 
 # Predefined global access parameter variables:
 sf="vina" # Type of scoring function used
-cpu="16" # Number of Threads used on the CPU
-ext="32" # Exhaustiveness
-threads="8192" # Number of Threads used on the GPU
-num_modes="9" # Number of output poses to generate
+cpu=$(nproc) # Number of Threads used on the CPU
+ext=$((2 * cpu)) # Exhaustiveness
+threads="8000" # Number of Threads used on the GPU
+num_poses="9" # Number of output poses to generate
 min_rmsd="1" # Minimum RMSD between poses
 energy_range="3" # Maximum energy interval between poses
-spacing="0.375" # grid spacing (Angstrom)
+spacing="1" # grid spacing (Angstrom)
+s_x="30" # Grid box x size
+s_y="30" # Grid box y size
+s_z="30" # Grid box z size
+doc_type="Rigid"
+proc_type="GPU"
+file_size="10" # Minimum file size to be rejected in bytes
 pH="7.4" # pH of the medium that will determine the protonation state of the ligands
-runs="10" # Parallel runs number
+max_lig="50000" # Maximum ligand number per folder
+reject="nan|Si|B"
+vel="med" # Specifying the speed of 3D coordinate generation - 1ª Attempt
+vel2="slow" # Specifying the speed of 3D coordinate generation - 2ª Attempt
+time_limit=$((10 * cpu)) # Maximum conversion time for each ligand for first attempt (in seconds)
+time_limit2=$((30 * cpu)) # Maximum conversion time for each ligand for second attempt (in seconds)
+steps="1500" # Energy minimization steps
+mw_1="0" # Molar Weight minimum
+mw_2="500" # Molar Weight maximum
+lp_1="-5" # Partition coeficient log minimum
+lp_2="5" # Partition coeficient log maximum
+rb="10" # Rotatable bonds maximum
+hd="5" # Number of H Bond donor maximum
+ha="10" # Number of H Bond aceptor maximum
+tpsa="140" # Topological Surface Area maximum
+# 40 ≤ MR ≤ 130* MOLAR REFRACTIVITY
+# 20 ≤ ATOMS NUMBER ≤ 70
+echo "GLOBAL ACCESS VARIABLES CHECK !"
+
+#################################################################################################################################
+#                                       FUNCTION TO OPEN A INTERACTIVE GNOME TERMINAL:                                          #
+#################################################################################################################################
+open_terminal() {
+    gnome-terminal -- bash -i -c "$CODOC_DIR/CODOC.sh; exec bash"
+}
 
 #################################################################################################################################
 #                                       FUNCTION TO DISPLAY THE MAIN MENU:                                                      #
 #################################################################################################################################
-title="|||| C O D O C ||||  A AUTOMATIZED MULTI-TARGET DOCKING TOOL"
-
 show_main_menu() {
-    dialog --clear --backtitle "$title" \
-    --title "MAIN MENU" \
-    --menu "Select an option:" 15 60 7 \
-    1 "Docking Settings" \
-    2 "Run Ligands Prepare" \
-    3 "Run Rigid Docking (with CPU)" \
-    4 "Run Rigid Docking (with GPU)" \
-    5 "Run Flexible Docking (with CPU)" \
-    6 "Run Flexible Docking (with GPU)" \
-    7 "Exit" \
-    2> .menu_escolha.txt
+    opcao=$(yad --list --center --title="$tag"\
+        --height=250 --width=650 --borders=10 \
+        --column="Select an option :" \
+        --image="$CODOC_DIR/icons/logo_codoc2P.png" \
+        --text-align=center \
+        --button="EXIT":1 --button="TERMINAL":2 --button="INSTALL PREREQUISITES":3 --button="OK":0 --buttons-layout=edge \
+        --separator "" \
+        "Step 1. General usage information" \
+        "Step 2. Docking settings" \
+        "Step 3. Prepare Ligands" \
+        "Step 4. Prepare Targets" \
+        "Step 5. Run Molecular Docking" \
+        )
+
+    # Check if the user selected an option or pressed a button
+    case $? in
+        0)  # OK button
+            case "$opcao" in
+                "Step 1. General usage information") codoc_inform ;;
+                "Step 2. Docking settings") docking_setting_form ;;
+                "Step 3. Prepare Ligands") show_ligand_menu ;;
+                "Step 4. Prepare Targets") run_target_prepare ;;
+                "Step 5. Run Molecular Docking") show_docking_menu ;;
+                *) remove_parameters; clear; exit 0 ;;
+            esac
+            ;;
+        1)  # Exit button
+            remove_parameters
+            rm -f "$LOGFILE"
+            clear
+            exit 0
+            ;;
+        2)  # Terminal LOG button
+            kill $MENU_PID
+            open_terminal
+            ;;
+        3)  # Prerequisites button
+            run_CODOC_prerequisites
+            ;;
+    esac
+}
+
+################################################################################################################################
+#                               FUNCTION TO INSTALL PREREQUISITES FOR CODOC:                                                   #
+################################################################################################################################
+codoc_inform() {
+
+yad --text-info --back=green --margins=20 < /"$CODOC_DIR"/README.txt \
+        --button="OK":0 --buttons-layout=edge \
+        --image="$CODOC_DIR/icons/infoP.png" 
+
+        if [ $? -eq 0 ]; then
+            show_main_menu
+        fi
+}
+
+################################################################################################################################
+#                               FUNCTION TO INSTALL PREREQUISITES FOR CODOC:                                                   #
+################################################################################################################################
+run_CODOC_prerequisites() {
+
+# SAVE THE LINUX ROOT PASSWORD FOR FUTURE INSTALLATIONS:
+while true; do
+    password=$(yad --entry --text-align=center --text="Provide the linux root password:" \
+        --entry-label="Password:" --skip-taskbar --center --width=400 --borders=10 \
+        --button="OK":0 --buttons-layout=edge --hide-text \
+        --image="$CODOC_DIR/icons/cadeadoP.png" )
+
+    # Check if the password is correct using the sudo command
+    echo "$password" | sudo -S -v >/dev/null 2>&1
 
     if [ $? -eq 0 ]; then
-        opcao=$(cat .menu_escolha.txt)
-        case $opcao in
-            1) show_form ;;
-            2) run_ligands_prepare ;;
-            3) run_rigid_docking_cpu ;;
-            4) run_rigid_docking_gpu ;;
-            5) run_flexible_docking_cpu ;;
-            6) run_flexible_docking_gpu ;;
-            7) remove_parameters; clear; exit 0 ;;
-            *) remove_parameters; clear; exit 0 ;;
-        esac
+        # If the password is correct, proceed with the script
+        echo "Password accepted. Proceeding..."
+        break
     else
-        remove_parameters
-        clear
-        exit 0
+        # If the password is incorrect, display an error message and return to the password prompt
+        yad --info --text-align=center --title="CODOC - WARNING" \
+            --text="Incorrect password.\nPlease try again!" \
+            --button="OK":0 --buttons-layout=center --skip-taskbar --center --width=400 --borders=10 \
+            --image="$CODOC_DIR/icons/warningP.png"
     fi
+done
+
+    install_menu_entry() {
+        # Add environment variables and aliases to .bashrc
+        # Content of the .desktop file
+        DESKTOP_ENTRY="[Desktop Entry]
+        Version=2024.1
+        Name=CODOC
+        Comment=A AUTOMATIZED MULTI-TARGET DOCKING TOOL
+        Exec=bash -i -c "$CODOC_EXEC"
+        Icon="$CODOC_ICON"
+        Terminal=false
+        Type=Application
+        Categories=Qt;Science;Chemistry;Physics;Education;
+        StartupNotify=true
+        MimeType=chemical/x-cml;chemical/x-xyz;
+        "
+
+        # Create the .desktop file in the applications menu if it doesn't exist (requires root permissions)
+        echo "$password" | sudo -S touch "$MENU_FILE"
+        echo "$password" | sudo -S bash -c "echo '$DESKTOP_ENTRY' > $MENU_FILE"
+        echo "$password" | sudo -S chmod +x "$MENU_FILE"
+        echo "Applications menu entry created successfully."
+    }
+
+    install_build() {
+        echo "UPDATE AND INSTALL BUILD_ESSENTIAL ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing build-essential... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+
+        ## Package Update:
+        echo "$password" | sudo -S apt-get update
+
+        ## Package with essential tools and libraries for building software from source code and basic dependencies:
+        echo "$password" | sudo -S apt-get install build-essential
+        echo "$password" | sudo -S apt-get install -y build-essential wget unzip cmake git
+        kill $YAD_PID              
+    }
+
+    install_parallel() {
+        echo "INSTALL GNU_PARALLEL FROM THE REPOSITORY ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing GNU-PARALLEL... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+
+        echo "$password" | sudo -S apt-get install parallel
+
+        kill $YAD_PID              
+    }
+
+    install_vina() {
+        echo "INSTALL VINA AND VINA_SPLIT 1.2.5 ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing Autodock-Vina and Vina-Split 1.2.5... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+        ## Transfers the vina and vina_split binary files to the CODOC directory:
+        echo "$password" | sudo -S apt-get install libboost-all-dev swig
+        wget https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/vina_1.2.5_linux_x86_64
+        wget https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/vina_split_1.2.5_linux_x86_64
+        mv vina_1.2.5_linux_x86_64 "$CODOC_DIR"/bin/
+        mv vina_split_1.2.5_linux_x86_64 "$CODOC_DIR"/bin/
+        chmod +x "$CODOC_DIR"/bin/vina_1.2.5_linux_x86_64
+        chmod +x "$CODOC_DIR"/bin/vina_split_1.2.5_linux_x86_64
+        kill $YAD_PID
+    }
+
+    install_mgltools() {
+        echo "Installing Mgltools-1.5.7 ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing Mgltools-1.5.7... \nFollow the instructions in the window for installation !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+        ## Installing MGLTools with the configuration file to the HOME directory:
+        wget https://ccsb.scripps.edu/download/292/
+        mv index.html mgltools_Linux-x86_64_1.5.7_install
+        chmod +x ./mgltools_Linux-x86_64_1.5.7_install
+        mgltools_Linux-x86_64_1.5.7_install
+        kill $YAD_PID
+    }
+
+    install_ADRF() {
+        echo "Function for Option 3 executed"
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing ADRF-1.0rc1... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+        ## Installing MGLTools with the configuration file to the HOME directory:
+        wget https://ccsb.scripps.edu/adfr/download/1028/
+        mv index.html ADFRsuite_Linux-x86_64_1.0_install
+        chmod +x ./ADFRsuite_Linux-x86_64_1.0_install
+        ADFRsuite_Linux-x86_64_1.0_install
+        kill $YAD_PID
+    }
+
+    install_obabel() {
+        echo "INSTALL OPENBABEL 3.0.0 ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing OPENBABEL 3.0.0... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+        ## Install Openbabel 3.0.0:
+        echo "Installing Openbabel 3.0.0..."
+        echo "$password" | sudo -S apt-get install cmake g++ make libeigen3-dev zlib1g-dev
+        wget https://github.com/openbabel/openbabel/archive/refs/tags/openbabel-3-0-0.tar.gz
+        tar -xzf openbabel-3-0-0.tar.gz
+        cd openbabel-openbabel-3-0-0
+        mkdir build
+        cd build
+        cmake ..
+        make
+        echo "$password" | sudo -S make install
+        kill $YAD_PID
+        obabel_version=$(obabel -V)
+        yad --text-info --title="Open Babel Version" --text="$obabel_version" \
+            --button="OK":0 --buttons-layout=edge \
+            --width=500 --height=300 --center
+    }
+
+    install_cuda() {
+        echo "INSTALL NVIDIA-CUDA-TOOLKIT ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing NVIDIA-CUDA-TOOLKIT... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+        ## Install Nvidia-Cuda-Toolkit from repository:
+        echo "Installing Nvidia-Cuda-Toolkit ..."
+        echo "$password" | sudo -S apt install nvidia-cuda-toolkit
+        kill $YAD_PID
+        cuda_version=$(nvcc --version)
+        yad --text-info --title="CUDA Version" --text="$cuda_version" \
+            --button="OK":0 --buttons-layout=edge \
+            --width=500 --height=300 --center
+    }
+
+    install_boost() {
+        echo "INSTALL BOOST 1.84.0 ..."
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Installing BOOST 1.84.0... \nFollow in the terminal and wait for the installation to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+        YAD_PID=$!
+
+        # Define Variables:
+        mkdir "$BOOST_DIR"
+        BOOST_TAR=boost_"${BOOST_VERSION//./_}".tar.gz
+
+        if [ ! -d ""$HOME"/boost_"${BOOST_VERSION//./_}"/include/boost" ]; then
+            echo "Installing Boost ${BOOST_VERSION}..."
+            wget -O ${BOOST_TAR} https://archives.boost.io/release/${BOOST_VERSION}/source/${BOOST_TAR}
+            tar -xzf ${BOOST_TAR}
+            cd ${BOOST_DIR}
+            ./bootstrap.sh --prefix="$BOOST_DIR"
+            ./b2
+            ./b2 headers
+            ./b2 install
+            touch test_boost.cpp
+            test_file="$BOOST_DIR"/test_boost.cpp
+            "cat <<EOL > "$test_file"
+#include <boost/version.hpp>
+#include <iostream>
+
+int main() {
+std::cout << "Boost version: " << BOOST_LIB_VERSION << std::endl;
+return 0;
+}
+EOL"
+            g++ test_boost.cpp -o test_boost -I"$HOME"/boost_"${BOOST_VERSION//./_}"/include -L"$HOME"/boost_"${BOOST_VERSION//./_}"/lib -lboost_system
+            sleep 1
+            kill $YAD_PID
+            test_boost_output=$(./test_boost)
+            yad --info --center \
+                --title="CODOC - INSTALL !" \
+                --text="$test_boost_output\n\nAre you seeing the correct version of Boost above?" \
+                --text-align=center \
+                --button="NO":1 --button="YES":0 --buttons-layout=edge \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/pcP.png
+                case $? in
+                    0) # Button YES
+                        cd $CODOC_DIR
+                        ;;
+                    1) # Button NO
+                        cd $CODOC_DIR
+                        yad --title="CODOC - FAILURE" \
+                            --text="Sorry :'( \nBoost and Vina-GPU installation failed! \nTry doing it manually by terminal." \
+                            --image="$CODOC_DIR/icons/failureP.png" \
+                            --skip-taskbar --center --width=600 --borders=10 \
+                            --button="OK":0 --buttons-layout=edge 
+                        ;;
+                esac                            
+        else
+            kill $YAD_PID
+            yad --title="CODOC - INFO" \
+                --text="Boost ${BOOST_VERSION} is already installed." \
+                --image="$CODOC_DIR/icons/infoP.png" \
+                --skip-taskbar --center --width=600 --borders=10 \
+                --button="OK":0 --buttons-layout=edge 
+        fi
+    }
+
+    install_vinagpu() {
+        echo "INSTALL VINA-GPU 2.1 ..."
+        # Define Variables:
+        VINA_REPO="https://github.com/DeltaGroupNJUPT/Vina-GPU-2.1.git"
+        VINA_DIR="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1"
+
+        if [ ! -d "${VINA_DIR}" ]; then
+            yad --info --center --title="CODOC - INSTALL !" \
+                --text="Installing VINA-GPU 2.1... \nFollow in the terminal and wait for the installation to finish !" \
+                --text-align=center --no-buttons --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/pcP.png &
+            YAD_PID=$!
+            echo "Installing AutoDock Vina GPU 2.1..."
+            git clone ${VINA_REPO}
+            cd ${VINA_DIR}
+            make_file="$VINA_DIR"/Makefile                
+            echo "" > "$make_file"              
+            cat <<EOL > "$make_file"
+# Need to be modified according to different users
+WORK_DIR=$(HOME)/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1
+BOOST_LIB_PATH=$(HOME)/boost_1_84_0
+OPENCL_LIB_PATH=/usr/local/cuda
+OPENCL_VERSION=-DOPENCL_3_0
+GPU_PLATFORM=-DNVIDIA_PLATFORM
+DOCKING_BOX_SIZE=-DSMALL_BOX
+
+# Should not be modified
+BOOST_INC_PATH=-I$(BOOST_LIB_PATH)/include -I$(BOOST_LIB_PATH)/include/boost
+VINA_GPU_INC_PATH=-I$(WORK_DIR)/lib -I$(WORK_DIR)/OpenCL/inc 
+OPENCL_INC_PATH=-I$(OPENCL_LIB_PATH)/include
+LIB1=-lboost_program_options -lboost_system -lboost_filesystem -lOpenCL
+LIB2=-lstdc++ -lstdc++fs
+LIB3=-lm -lpthread
+LIB_PATH=-L$(BOOST_LIB_PATH)/stage/lib -L$(OPENCL_LIB_PATH)/lib64
+SRC=$(WORK_DIR)/lib/*.cpp $(WORK_DIR)/OpenCL/src/wrapcl.cpp $(BOOST_LIB_PATH)/libs/thread/src/pthread/thread.cpp $(BOOST_LIB_PATH)/libs/thread/src/pthread/once.cpp
+MACRO=$(OPENCL_VERSION) $(GPU_PLATFORM) $(DOCKING_BOX_SIZE) -DBOOST_TIMER_ENABLE_DEPRECATED #-DDISPLAY_SUCCESS -DDISPLAY_ADDITION_INFO
+all:out
+out:$(WORK_DIR)/main/main.cpp
+g++ -o AutoDock-Vina-GPU-2-1 $(BOOST_INC_PATH) $(VINA_GPU_INC_PATH) $(OPENCL_INC_PATH) ./main/main.cpp -O3 $(SRC) $(LIB1) $(LIB2) $(LIB3) $(LIB_PATH) $(MACRO) $(OPTION) -DNDEBUG 
+source:$(WORK_DIR)/main/main.cpp
+g++ -o AutoDock-Vina-GPU-2-1 $(BOOST_INC_PATH) $(VINA_GPU_INC_PATH) $(OPENCL_INC_PATH) ./main/main.cpp -O3 $(SRC) $(LIB1) $(LIB2) $(LIB3) $(LIB_PATH) $(MACRO) $(OPTION) -DNDEBUG -DBUILD_KERNEL_FROM_SOURCE 
+debug:$(WORK_DIR)/main/main.cpp
+g++ -o AutoDock-Vina-GPU-2-1 $(BOOST_INC_PATH) $(VINA_GPU_INC_PATH) $(OPENCL_INC_PATH) ./main/main.cpp -g $(SRC) $(LIB1) $(LIB2) $(LIB3) $(LIB_PATH) $(MACRO) $(OPTION) -DBUILD_KERNEL_FROM_SOURCE 
+clean:
+rm AutoDock-Vina-GPU-2-1
+EOL
+            make clean && make out
+            echo "$password" | sudo -S cp "$VINA_DIR"/Kernel1_Opt.bin "$VINA_DIR"/Kernel2_Opt.bin /usr/local/cuda
+            kill $YAD_PID
+            yad --info --center \
+                --title="CODOC - INSTALL !" \
+                --text="Do you want to run the standard Vina-GPU test?" \
+                --text-align=center \
+                --button="NO":1 --button="YES":0 --buttons-layout=edge \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/pcP.png
+                case $? in
+                    0)  # Button YES
+                        yad --info --center --title="CODOC - INSTALL !" \
+                            --text="Vina-GPU test... \nFollow the test in the terminal and wait to finish !" \
+                            --text-align=center --no-buttons --width=500 --borders=10 \
+                            --image=$CODOC_DIR/icons/pcP.png &
+                        YAD_PID=$!
+                        cd "$HOME"/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1/input_file_example
+                        sed -i '3c\opencl_binary_path = /usr/local/cuda' 2bm2_config.txt
+                        cd "$HOME"/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1
+                        ./AutoDock-Vina-GPU-2-1 --config ./input_file_example/2bm2_config.txt
+                        kill $YAD_PID                            
+                        ;;
+                    1)  # Button NO            
+                        ;;
+                esac
+        else
+            echo "AutoDock Vina GPU 2.1 folder is already installed."
+            yad --title="CODOC - INFO" \
+                --text="Boost ${BOOST_VERSION} is already installed." \
+                --image="$CODOC_DIR/icons/infoP.png" \
+                --skip-taskbar --center --width=600 --borders=10 \
+                --button="OK":0 --buttons-layout=edge 
+        fi
+    }
+
+    install_path() {
+        echo "EDITING ENVIRONMENT VARIABLES TO PATH FILE ..."
+        # Add environment variables and aliases to .bashrc
+        echo "Adding environment variables and aliases to ~/.bashrc..."
+        echo "Adding environment variables and aliases to ~/.bashrc..."
+        {
+            echo "export PATH=$PATH:'${CODOC_DIR}'"
+            echo "alias CODOC='${CODOC_DIR}/CODOC.sh'"
+            echo "export PATH=$PATH:'${CODOC_DIR}/bin'"
+            echo "export PATH=$PATH:'${CODOC_DIR}/icons'"
+            echo "export PATH=\$PATH:'$HOME/MGLTools-1.5.7/bin'"
+            echo "alias adt='$HOME/MGLTools-1.5.7/bin/adt'"
+            echo "alias pythonsh='$HOME/MGLTools-1.5.7/bin/pythonsh'"
+            echo "export PATH=\$PATH:'$BOOST_DIR'"
+            echo "export PATH=\$PATH:'$BOOST_DIR/bin.v2'"
+            echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:'$BOOST_DIR/stage/lib'"
+            echo "export PATH=\$PATH:'$VINA_DIR/lib'"
+            echo "export PATH=\$PATH:'$VINA_DIR/main'"
+            echo "export PATH=\$PATH:'$VINA_DIR/OpenCL/inc'"
+            echo "export PATH=\$PATH:'$VINA_DIR'"
+            echo "alias vina_GPU='$VINA_DIR/AutoDock-Vina-GPU-2-1'"
+            echo "export PATH=\$PATH:'$HOME/ADFRsuite-1.0/bin'"
+            echo "alias prepare_receptor='$HOME/ADFRsuite-1.0/bin/prepare_receptor'"
+            echo "alias prepare_ligand='$HOME/ADFRsuite-1.0/bin/prepare_ligand'"
+            echo "export PATH=\$PATH:'/usr/local/cuda/bin'"
+            echo "export PATH=\$PATH:'/usr/local/cuda/include'"
+            echo "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:'/usr/local/cuda/lib64'"
+        } >> ~/.bashrc
+        source ~/.bashrc
+
+        # Prompt user to update shell
+        echo "The environment variables and aliases have been added to ~/.bashrc."
+    }
+
+    install_cogen3d() {
+        yad --info --center --title="CODOC - INSTALL !" \
+            --text="Install CoGen3D Prerequisites... \nFollow the test in the terminal and wait to finish !" \
+            --text-align=center --no-buttons --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/pcP.png &
+            YAD_PID=$!
+            echo "$password" | sudo -S apt update
+            echo "$password" | sudo -S apt install python3.8
+            echo "$password" | sudo -S apt install python3-pip
+            pip install pandas
+            pip install rdkit
+            pip install dimorphite-dl
+            pip install tqdm
+            pip install meeko
+            pip install xlsxwriter
+            kill $YAD_PID
+    }
+
+install_options=$(yad --list --checklist --title="CODOC - INSTALL PREREQUISITES" \
+--width=500 --height=500 --column="Select" --column="Options" \
+--button="MAIN MENU:1" --separator="\t" --button="ALL:2" --button="INSTALL:0" --buttons-layout=edge \
+--center --image=$CODOC_DIR/icons/pcP.png \
+true "1. Creating menu entry and shortcut" \
+false "2. Update Repository and Build Essentials" \
+false "3. GNU-Parallel" \
+false "4. Autodock Vina and Vina Split 1.2.5" \
+false "5. Mgltools-1.5.7" \
+false "6. ADRF-1.0" \
+false "7. OpenBabel 3.0.0" \
+false "8. Nvidia-Cuda-Toolkit" \
+false "9. Boost 1.84.0" \
+false "10. AutoDock Vina-GPU 2.1" \
+false "11. Edit environment variables in the PATH file" \
+false "12. CoGen3D Prerequisites" )
+exit_code=$?
+
+if [[ $exit_code -eq 0 ]]; then    
+    echo "SELECTED OPTIONS FOR INSTALL:"
+    echo "$install_options"
+    touch .install_data.txt
+    echo "$install_options" > .install_data.txt
+    run_install="$CODOC_DIR"/.install_data.txt
+  
+    while read -r line; do
+        second_element=$(echo "$line" | awk '{print $2}')
+        case "$second_element" in
+            1.) install_menu_entry ;;
+            2.) install_build ;;
+            3.) install_parallel ;;
+            4.) install_vina ;;
+            5.) install_mgltools ;;
+            6.) install_ADRF ;;
+            7.) install_obabel ;;
+            8.) install_cuda ;;
+            9.) install_boost ;;
+            10.) install_vinagpu ;;
+            11.) install_path ;;
+            12.) install_cogen3d ;;
+            *) echo "No valid option selected." ;;
+        esac
+    done < "$run_install"
+
+elif [[ $exit_code -eq 2 ]]; then
+    install_menu_entry
+    install_build
+    install_parallel
+    install_vina
+    install_mgltools
+    install_ADRF
+    install_obabel
+    install_cuda
+    install_boost
+    install_vinagpu
+    install_path
+    install_cogen3d
+else
+    show_main_menu
+fi
+    show_main_menu
 }
 
 #################################################################################################################################
 #                               FUNCTION TO CONFIGURE DOCKING PARAMETERS AND VARIABLES:                                         #
 #################################################################################################################################
-show_form() {
-     form_data
-     form_data=$(dialog --backtitle "$title" \
-     --title "CONFIGURATION PARAMETERS" \
-     --form "Change the fields below if necessary:" 26 65 0 \
-     "Scoring function:" 1 4 "$sf" 1 35 20 0 \
-     "vina / ad4 / vinardo" 2 4 "" 0 0 0 0 \
-     "CPU Threads" 4 4 "$cpu" 4 35 20 0 \
-     "Exhaustiveness" 6 4 "$ext" 6 35 20 0 \
-     "GPU Threads" 8 4 "$threads" 8 35 20 0 \
-     "Poses" 10 4 "$num_modes" 10 35 20 0 \
-     "minimum RMSD" 12 4 "$min_rmsd" 12 35 20 0 \
-     "Energy Range (Kcal/mol)" 14 4 "$energy_range" 14 35 20 0 \
-     "Grid Spacing" 16 4 "$spacing" 16 35 20 0 \
-     "pH" 18 4 "$pH" 18 35 20 0 \
-     "Parallel runs" 20 4 "$runs" 20 35 20 0 \
-      3>&1 1>&2 2>&3)
+docking_setting_form() {
+form_data1=$(yad --form --center --title "Docking Settings" \
+    --text "    Change the fields below if necessary:" \
+    --field="   Scoring function :":CBE "vina!ad4!vinardo" \
+    --field="   CPU Threads :":NUM "$cpu" \
+    --field="   Exhaustiveness :":NUM "$ext" \
+    --field="   GPU Threads :":NUM "$threads" \
+    --field="   Poses :":NUM "$num_poses" \
+    --field="   Minimum RMSD :":NUM "$min_rmsd" \
+    --field="   Energy Range (Kcal/mol) :":NUM "$energy_range" \
+    --field="   Grid Spacing :":NUM "$spacing" \
+    --field="   Grid x size :":NUM "$s_x" \
+    --field="   Grid y size :":NUM "$s_y" \
+    --field="   Grid z size :":NUM "$s_z" \
+    --text-align=center \
+    --width=500 --height=500 \
+    --separator="\n" \
+    --image="$CODOC_DIR/icons/configP.png" \
+    --button="MAIN MENU":1 --button="OK":0  --buttons-layout=edge \
+)
 
-     # Check if the user canceled the form:
-     if [ $? -eq 0 ]; then
-         # Assign the entered data to variables:
-         echo "$form_data" > .form_data.txt
-         source .form_data.txt
-         export $sf
-         export $cpu
-         export $ext
-         export $threads
-         export $num_modes
-         export $min_rmsd
-         export $energy_range
-         export $spacing
-         export $pH
-         show_main_menu
-     else
-         show_main_menu
-     fi
+    # Check if the user selected an option or pressed a button
+    case $? in
+        0)  # OK button
+            touch .form_data1.txt
+            echo "$form_data1" > .form_data1.txt
+            #source .form_data1.txt
+            sed -i 's/,/./g' .form_data1.txt
+            data1="$CODOC_DIR"/.form_data1.txt
+            sf="$(sed -n '1p' $data1)"
+            cpu="$(sed -n '2p' $data1)"
+            ext="$(sed -n '3p' $data1)"
+            threads="$(sed -n '4p' $data1)"
+            num_poses="$(sed -n '5p' $data1)"
+            min_rmsd="$(sed -n '6p' $data1)"
+            energy_range="$(sed -n '7p' $data1)"
+            spacing="$(sed -n '8p' $data1)"
+            s_x="$(sed -n '9p' $data1)"
+            s_y="$(sed -n '10p' $data1)"
+            s_z="$(sed -n '11p' $data1)"
+
+            export sf cpu ext threads num_poses min_rmsd energy_range spacing s_x s_y s_z
+            show_main_menu
+            ;;
+        1)  # Main Menu button
+            show_main_menu
+            ;;
+    esac
 }
 
 #################################################################################################################################
-#                                       FUNCTION TO PREPARE LINKS FOR DOCKING:                                                  #
+#                               FUNCTION TO CONFIGURE LIGAND PREPARE VARIABLES:                                                 #
 #################################################################################################################################
-run_ligands_prepare() {
+ligands_setting_form() {
+    form_data2=$(
+    yad --form --center --title="LIGAND PREPARE CONFIGURATION PARAMETERS" \
+        --text="Change the fields below if necessary :" \
+        --width=500 --height=500 --borders=10 \
+        --separator="\n" \
+        --image="$CODOC_DIR/icons/configP.png" \
+        --button="LIGANDS MENU":1 --button="OK":0 --buttons-layout=edge \
+        --field="Minimum File Size (Bytes) :":NUM "$file_size" \
+        --field="pH :":NUM "$pH"\!0..100\!0.1\!2 \
+        --field="Máx. ligands/folder :":NUM "$max_lig" \
+        --field="Rejected elements :" "$reject" \
+        --field="Speed of gen3D 1ª attempt :":CB """!fastest!fast!med!slow!slowest!dist" \
+        --field="Speed of gen3D 2ª attempt :":CB """!fastest!fast!med!slow!slowest!dist" \
+        --field="Timeout 1ª attempt(s) :":NUM "$time_limit" \
+        --field="Timeout 2ª attempt(s) :":NUM "$time_limit2" \
+        --field="Energy minimization steps:":NUM "$steps" \
+        )
+
+    # Check if the user selected an option or pressed a button
+    case $? in
+        0)  # OK button
+            touch .form_data2.txt
+            echo "$form_data2" > .form_data2.txt
+            sed -i 's/,/./g' .form_data2.txt
+            data2="$CODOC_DIR"/.form_data2.txt
+            file_size="$(sed -n '1p' $data2)"
+            pH="$(sed -n '2p' $data2)"
+            max_lig="$(sed -n '3p' $data2)"
+            reject="$(sed -n '4p' $data2)"
+            vel="$(sed -n '5p' $data2)"
+            vel2="$(sed -n '6p' $data2)"
+            time_limit="$(sed -n '7p' $data2)"
+            time_limit2="$(sed -n '8p' $data2)"
+            steps="$(sed -n '9p' $data2)"
+
+            #Source .form_data2.txt
+            export file_size pH max_lig reject vel vel2 time_limit time_limit2 steps
+            show_ligand_menu
+            ;;
+        1)  # Ligand Prepare Menu button
+            show_ligand_menu
+            ;;
+    esac
+}
+
+#################################################################################################################################
+#                            FUNCTION TO DISPLAY THE LIGANDS PREPARE MENU:                                                      #
+#################################################################################################################################
+show_ligand_menu() {
+    opcao=$(
+    yad --list --center --title="LIGANDS PREPARE MENU" \
+        --text=" Select an option:" --text-align=center \
+        --width=600 --height=500 --borders=10 \
+        --separator="\n" \
+        --image="$CODOC_DIR/icons/ligandP.png" \
+        --button="MAIN MENU":1 --button="OK":0 --buttons-layout=edge \
+        --column=" Option:" \
+        "						CODOC Tools       " \
+        "	Ligand prepare settings" \
+        "	Split multimodel files to directories" \
+        "	Split large folders (Memory Optimization)" \
+        "	Generate ligands SMI/CSV with Lipinski Parameter" \
+        "	Druggability filter" \
+        "	Move empty files" \
+        "	Run Ligands Conversion for PDBQT" \
+        "	Attempt to recover lost ligands" \
+        "	Reject .pdbqt ligands files with errors" \
+        "	Move empty files" \
+        "" \
+        "						CoGen3D       " \
+        "	CoGen3D settings" \
+        "	Run CoGen3D" \
+        "	Rigid macrocycles for Vina-GPU(Without G0,G1...)" \
+        "" 
+        )
+
+    # Check if the user selected an option
+    case $? in
+        0) # OK button
+            case "$opcao" in
+                "	Ligand prepare settings") ligands_setting_form ;;
+                "	Split multimodel files to directories") run_ligands_split ;;
+                "	Split large folders (Memory Optimization)") run_split_folder ;;
+                "	Generate ligands SMI/CSV with Lipinski Parameter") run_lipinski_parameters ;;
+                "	Druggability filter") run_druggability_filter ;;
+                "	Run Ligands Conversion for PDBQT") run_ligands_conversion ;;
+                "	Attempt to recover lost ligands") run_pdbqt_recovery ;;
+                "	Reject .pdbqt ligands files with errors") run_pdbqt_rejected ;;
+                "	Move empty files") run_empty ;;
+                "	CoGen3D settings") cogen3d_settings_form ;;
+                "	Run CoGen3D") run_cogen3d_conversion ;;
+                "	Rigid macrocycles for Vina-GPU(Without G0,G1...)") run_macrocyclic ;;
+                *) show_ligand_menu ;;
+            esac
+            ;;
+        1) # Main Menu button
+            show_main_menu
+            ;;
+    esac
+}
+
+#################################################################################################################################
+#                            FUNCTION TO DISPLAY THE TAGETS PREPARE MENU:                                                      #
+#################################################################################################################################
+run_target_prepare() {
+
+target_file=$(yad --file --center --title="CHOOSE TARGET FILE" \
+                --image="$CODOC_DIR/icons/targetP.png" \
+                --separator="\n" \
+                --width=900 --height=600 --borders=10 \
+                --button="MAIN MENU":1 --button="OK":0 --buttons-layout=edge )
+
+# Verificando se o usuário selecionou uma opção
+case $? in
+    0) # Botão OK
+        # Criando .form_data4.txt e diretórios:
+        touch .form_data4.txt
+        EXT="${target_file##*.}"
+        target_base=$(basename "$target_file" ."$EXT")
+        target_dir="$targets"/"$target_base"
+        mkdir "$target_dir"
+        cp "$target_file" "$target_dir"
+        target_in="$target_dir"/"$target_base"."$EXT"
+        target_out="$target_dir"/protein.pdbqt
+
+        # Configuração da grade com interface do yad:
+        grid_config=$(
+        yad --form --center --title "Grid Settings" \
+            --text "    Change the fields below if necessary:" \
+            --field="   Grid Spacing :":FLT "$spacing" \
+            --field="   Grid x size :":NUM "$s_x" \
+            --field="   Grid y size :":NUM "$s_y" \
+            --field="   Grid z size :":NUM "$s_z" \
+            --field="   Grid x center :":FLT "$c_x" \
+            --field="   Grid y center :":FLT "$c_y" \
+            --field="   Grid z center :":FLT "$c_z" \
+            --text-align=center \
+            --width=500 --height=500 --borders=10 \
+            --separator="\n" \
+            --image="$CODOC_DIR/icons/configP.png" \
+            --button="RESTART":1 --button="OK":0 --buttons-layout=edge )
+
+        # Verificando a escolha do usuário na configuração da grade
+        case $? in
+            0)  # Botão OK
+                echo "$grid_config" > .form_data4.txt
+                # Atualizando parâmetros de docking de acordo com as escolhas do usuário:
+                data4="$CODOC_DIR/.form_data4.txt"
+                spacing="$(sed -n '1p' $data4)"
+                s_x="$(sed -n '2p' $data4)"
+                s_y="$(sed -n '3p' $data4)"
+                s_z="$(sed -n '4p' $data4)"
+                c_x="$(sed -n '5p' $data4)"
+                c_y="$(sed -n '6p' $data4)"
+                c_z="$(sed -n '7p' $data4)"
+                ;;
+            1)  # Botão Main Menu
+                rm -rf "$target_dir"
+                run_target_prepare
+                ;;
+        esac
+
+        # Criando arquivo grid.txt
+        touch "$target_dir"/grid.txt
+        grid_file="$target_dir"/grid.txt
+
+        # Criando arquivo grid.txt para cada target:
+        cat <<EOL > "$grid_file"
+$target_base
+spacing	$spacing
+npts    $s_x	$s_y	$s_z
+center	$c_x	$c_y	$c_z
+EOL
+
+        # Mantendo linhas que começam com ATOM ou TER
+        cd "$target_dir"
+        sed -i '/^ATOM\|^TER/!d' "$target_in"
+        $HOME/ADFRsuite-1.0/bin/prepare_receptor -r "$target_in" -o "$target_out"
+        rm "$target_in"
+        cd ../
+        yad --info --center \
+            --title="CODOC - QUESTION !" \
+            --text="DO YOU WANT TO PREPARE ANOTHER TARGET?" \
+            --text-align=center \
+            --button="NO":1 --button="YES":0 --buttons-layout=center \
+            --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/questionP.png
+
+        case $? in
+            0)  # Button YES
+                run_target_prepare
+                ;;
+            1)  # Button NO
+                show_main_menu
+                ;;
+        esac
+        ;;
+    1) # Botão Main Menu
+        show_main_menu
+        ;;
+esac
+}
+
+#################################################################################################################################
+#                                       FUNCTION TO DISPLAY THE DOCKING MENU:                                                   #
+#################################################################################################################################
+show_docking_menu() {
+opcao=$(
+    yad --form --center --title="DOCKING MENU" \
+        --text="Select the following options :" \
+        --width=500 --borders=10 \
+        --separator="\n" \
+        --image="$CODOC_DIR/icons/docP.png" \
+        --field="Docking Type :":CB "!Rigid!Flexible" \
+        --field="Processing Type :":CB "!CPU!GPU" \
+        --button="MAIN MENU":1 --button="OK":0 --buttons-layout=edge )
+
+# Check if the user selected an option or pressed a button
+case $? in
+    0)  # OK button
+        doc_type=$(echo "$opcao" | sed -n '1p')
+        proc_type=$(echo "$opcao" | sed -n '2p')
+        if [[ "$doc_type" == "Rigid" && "$proc_type" == "CPU" ]]; then
+            run_rigid_docking_cpu
+        elif [[ "$doc_type" == "Rigid" && "$proc_type" == "GPU" ]]; then
+            run_rigid_docking_gpu
+        elif [[ "$doc_type" == "Flexible" && "$proc_type" == "CPU" ]]; then
+            run_flexible_docking_cpu
+        elif [[ "$doc_type" == "Flexible" && "$proc_type" == "GPU" ]]; then
+            run_flexible_docking_gpu
+        fi
+        ;;
+    1)  # MAIN MENU button
+        show_main_menu
+        ;;
+esac
+}
+
+#################################################################################################################################
+#                                       FUNCTION OF SPLIT MULTI-MODEL LIGANDS FOR DOCKING:                                      #
+#################################################################################################################################
+run_ligands_split() {
 # INITIAL USER GUIDELINES:
-dialog --title "ATTENTION" --msgbox "MULTI-MODEL FILES MUST BE PLACED IN THE "LIGANDS" FOLDER AND SINGLE LIGAND FILES MUST BE PLACED IN "SUB FOLDERS" WITHIN LIGANDS FOLDER. NAME THESE SUB FOLDERS WITH ACRONYMS THAT IDENTIFY THE LIGAND DATABASE!" 10 60 ;
-dialog --title "ATTENTION" --msgbox "ONLY SOME FILE FORMATS ARE ACCEPTED: .mol2/.sdf/.smi/.pdb" 10 60 ;
-
-# Updating variables:
-data="$CODOC_DIR/.form_data.txt"
-pH="$(sed -n '9p' $data)"
-cpu="$(sed -n '2p' $data)"
-
+yad --info --center \
+    --title="CODOC - INFORMATION !" \
+    --text="MULTI-MODEL FILES MUST BE PLACED \nIN THE \"LIGANDS\" FOLDER. \nSUB-FOLDERS WILL BE GENERATED AFTER THE SPLIT!" \
+    --text-align=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/infoP.png
+if [ $? -eq 1 ]; then
+    show_ligand_menu
+fi
+yad --info --center \
+    --title="CODOC - INFORMATION !" \
+    --text="ONLY SOME FILE FORMATS ARE ACCEPTED: \n.mol2/.sdf/.smi/.pdb/.pdbqt. \nMAKE SURE THERE ARE NO FILES WITH OTHER EXTENSIONS!" \
+    --text-align=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/infoP.png
+if [ $? -eq 1 ]; then
+    show_ligand_menu
+fi
 # CHECK IF THERE ARE MULTI-MODEL FILES IN THE "LIGANDS" FOLDER:
 quantity_files=$(find "$ligands" -mindepth 1 -maxdepth 1 -type f ! -path "$ligands" | wc -l)
 if [ "$quantity_files" -eq 0 ]; then
-    dialog --title "ATTENTION" --msgbox "THERE ARE NO MULTI-MODEL LIGANDS FILES IN THE "LIGANDS" FOLDER" 10 60 ;
-    
+    yad --info --center \
+        --title="CODOC - INFORMATION !" \
+        --text="THERE ARE NO MULTI-MODEL LIGANDS FILES IN THE \"LIGANDS\" FOLDER" \
+        --text-align=center \
+        --button="OK":0 --buttons-layout=center \
+        --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/attentionP.png
+    if [ $? -eq 0 ]; then
+        show_ligand_menu
+    fi
+
 elif [ "$quantity_files" -gt 0 ]; then
-    for multi in "$ligands"/*; do
+    for multi in "$ligands"/*; do        
         if [ -f "$multi" ]; then        
             if [[ "$multi" == *.sdf ]]; then
-                LIG=$(basename $multi .sdf)
-                mkdir "$ligands"/$LIG
-                # Using grep and sed to delete lines that start with "M  CHG" because it generates an error in the conversion
-                if grep -q "M  CHG" "$multi"; then
-                    multi_temp="$ligands/multi_temp.sdf"
-                    sed '/^M  CHG/d' "$multi" > "$multi_temp"
-                    mv "$multi_temp" "$multi"
-                    dialog --title "ATTENTION" --msgbox "FIXED MULTI-MODEL FILE WITH \"M  CHG\"" 10 60
-                fi
+                LIG=$(basename "$multi" .sdf)
+                total=$(grep -o '\$\$\$\$' "$multi" | wc -l)
+                mkdir "$ligands/$LIG"
+                mv $multi "$ligands"/"$LIG"
+                obabel "$ligands"/"$LIG"/"$LIG".sdf -O "$ligands"/"$LIG"/"$LIG"*.sdf --split --unique &
+                obabel_pid=$!
+                ( 
+                  while [ -e "$ligands"/"$LIG"/"$LIG".sdf ]; do                   
+                    rest=$(find "$ligands"/$LIG -maxdepth 1 -type f | wc -l)        
+                    progress=$(( rest * 100 / total  ))
+                    echo $progress
+                    sleep 0.1
+                  done
+                 ) | yad --splash --progress --text="Fragmenting \"$LIG\" files…" \
+                  --image=$CODOC_DIR/icons/progressP.png \
+                  --auto-close \
+                  --skip-taskbar \
+                  --center --width=400 --borders=10 \
+                  --no-buttons &
+                wait $obabel_pid
+                rm "$ligands"/"$LIG"/"$LIG".sdf
 
-                
-                obabel "$multi" -O "$ligands/$LIG/$LIG.sdf" --split -h               
-                 
-                for file in "$ligands/$LIG"/*; do
-                    f=$(basename $file .sdf)
-                    # Verifica se o arquivo existe
+                yad --info --center \
+                    --title="CODOC - CONFIRMATION !" \
+                    --text="Please wait for it to finish..." \
+                    --text-align=center \
+                    --width=300 --borders=10 --no-buttons \
+                    --image=$CODOC_DIR/icons/waitP.png &
+                YAD_PID=$!
+
+                # Converts the chemical names generated after splitting into .sdf files into the database id code and remove spaces:
+                for file in "$ligands/$LIG"/*.sdf; do
+                    f=$(basename "$file" .sdf)
+                    # Checks if the file exists
                     if [ -f "$file" ]; then
-                        # Extrai zinc_id do arquivo usando awk
+                        # Extract database id code from file using awk
+                        id_cod=$(awk '/>  <id>/ {getline; print}' "$file")
                         zinc=$(awk '/>  <zinc_id>/ {getline; print}' "$file")
                         compound=$(awk '/>  <COMPOUND_ID>/ {getline; print}' "$file")
                         coconut=$(awk '/>  <coconut_id>/ {getline; print}' "$file")
-
-                        # Renomeia o arquivo com o identificador apropriado
+                        chembl=$(awk '/>  <chembl_id>/ {getline; print}' "$file")
+                        
+                        if [ -n "$id_cod" ]; then
+                            # Checks whether the file with the new name already exists to avoid conflict
+                            if [ ! -f "$ligands/$LIG/"$LIG""$id_cod".sdf" ]; then
+                                mv "$file" "$ligands/$LIG/"$LIG""$id_cod".sdf"
+                            fi
+                        fi
                         if [ -n "$zinc" ]; then
-                            # Verifica se o arquivo com o novo nome já existe para evitar conflito
+                            # Checks whether the file with the new name already exists to avoid conflict
                             if [ ! -f "$ligands/$LIG/$zinc.sdf" ]; then
-                                mv "$file" "$ligands/$LIG/$zinc.sdf"
-                                continue
+                                mv "$file" "$ligands/$LIG/$zinc.sdf"                                
                             fi
                         fi
                         if [ -n "$compound" ]; then
-                            # Verifica se o arquivo com o novo nome já existe para evitar conflito
+                            # Checks whether the file with the new name already exists to avoid conflict
                             if [ ! -f "$ligands/$LIG/$compound.sdf" ]; then
-                                mv "$file" "$ligands/$LIG/$compound.sdf"
-                                continue
+                                mv "$file" "$ligands/$LIG/$compound.sdf"                                
                             fi
                         fi
                         if [ -n "$coconut" ]; then
-                            # Verifica se o arquivo com o novo nome já existe para evitar conflito
+                            # Checks whether the file with the new name already exists to avoid conflict
                             if [ ! -f "$ligands/$LIG/$coconut.sdf" ]; then
-                                mv "$file" "$ligands/$LIG/$coconut.sdf"
-                                continue
+                                mv "$file" "$ligands/$LIG/$coconut.sdf"                                
                             fi
+                        fi
+                        if [ -n "$chembl" ]; then
+                            # Checks whether the file with the new name already exists to avoid conflict
+                            if [ ! -f "$ligands/$LIG/$coconut.sdf" ]; then
+                                mv "$file" "$ligands/$LIG/$chembl.sdf"                                
+                            fi
+                        fi
+                        # Check if the file name contains spaces
+                        if [[ "$file" =~ \  ]]; then
+                            # Remove spaces from the file name
+                            new_file=$(echo "$file" | tr -d ' ')
+                            mv "$file" "$new_file"
                         fi
                     fi
                 done
-
-                rm "$multi"
-                # Due to a conversion error, the first line must be deleted so that it is no longer recognized as a multi-model file
-#                    for file in "$ligands"/$LIG/*; do
-#                        # Checks if the file exists
-#                        if [[ -f "$file" ]]; then
-#                            # Use sed to remove the first line and the last line
-#                            sed '1d' "$file" > "${file}.tmp"
-#                            # Replaces the original file with the temporary file
-#                            mv "${file}.tmp" "$file"
-#                        fi
-#                    done
-#                
+                
             elif [[ "$multi" == *.mol2 ]]; then
-                LIG=$(basename $multi .mol2)
+                LIG=$(basename "$multi" .mol2)
+                total=$(wc -l < "$multi")
                 mkdir "$ligands"/$LIG
-                obabel "$ligands"/*.mol2 -O "$ligands"/"$LIG"/.mol2 --split -h
-                rm "$multi"
-                # Due to a conversion error, the first and the last lines must be deleted so that it is no longer recognized as a multi-model file
-#                for file in "$ligands"/$LIG/*; do
-#                    # Checks if the file exists
-#                    if [[ -f "$file" ]]; then
-#                        # Counts the total number of lines in the file
-#                        ENDMDL=$(wc -l < "$file")
-#                        # Use sed to remove the first and last lines
-#                        sed '1d;'"${ENDMDL}"'d' "$file" > "${file}.tmp"
-#                        # Replaces the original file with the temporary file
-#                        mv "${file}.tmp" "$file"
-#                    fi
-#                done
+                mv $multi "$ligands"/$LIG
+                obabel "$ligands"/$LIG/*.mol2 -O "$ligands"/"$LIG"/.mol2 --split --unique cansmi &
+                obabel_pid=$!
+                ( 
+                  while [ -e "$ligands"/"$LIG"/"$LIG".smi ]; do                   
+                    rest=$(find "$ligands"/$LIG -maxdepth 1 -type f | wc -l)        
+                    progress=$(( rest * 100 / total  ))
+                    echo $progress
+                    sleep 0.1
+                  done
+                 ) | yad --splash --progress --text="Fragmenting \"$LIG\" files…" \
+                  --image=$CODOC_DIR/icons/progressP.png \
+                  --auto-close \
+                  --skip-taskbar \
+                  --center --width=400 --borders=10 \
+                  --no-buttons &
+                wait $obabel_pid
+                rm "$ligands"/"$LIG"/"$LIG".mol2
 
             elif [[ "$multi" == *.smi ]]; then
-                LIG=$(basename $multi .smi)
+                LIG=$(basename "$multi" .smi)
+                total=$(wc -l < "$multi")
                 mkdir "$ligands"/$LIG
-                obabel "$ligands"/*.smi -O "$ligands"/"$LIG"/.smi --split -h
-                rm "$multi"
-                # Due to a conversion error, the first and the last lines must be deleted so that it is no longer recognized as a multi-model file
-            #            for file in "$ligands"/$LIG/*; do
-            #                # Checks if the file exists
-            #                if [[ -f "$file" ]]; then
-            #                    # Counts the total number of lines in the file
-            #                    ENDMDL=$(wc -l < "$file")
-            #                    # Use sed to remove the first and last lines
-            #                    sed '1d;'"${ENDMDL}"'d' "$file" > "${file}.tmp"
-            #                    # Replaces the original file with the temporary file
-            #                    mv "${file}.tmp" "$file"
-            #                fi
-            #            done
+                mv $multi "$ligands"/$LIG                
+                obabel "$ligands"/"$LIG"/"$LIG".smi -O "$ligands"/"$LIG"/.smi --split --unique cansmi &
+                obabel_pid=$!
+                ( 
+                  while [ -e "$ligands"/"$LIG"/"$LIG".smi ]; do                   
+                    rest=$(find "$ligands"/$LIG -maxdepth 1 -type f | wc -l)        
+                    progress=$(( rest * 100 / total  ))
+                    echo $progress
+                    sleep 0.1
+                  done
+                 ) | yad --splash --progress --text="Fragmenting \"$LIG\" files…" \
+                  --image=$CODOC_DIR/icons/progressP.png \
+                  --auto-close \
+                  --skip-taskbar \
+                  --center --width=400 --borders=10 \
+                  --no-buttons &
+                wait $obabel_pid
+                rm "$ligands"/"$LIG"/"$LIG".smi
+
+            elif [[ "$multi" == *.pdb ]]; then
+                # Multi-model .pdb files are not common. 
+                LIG=$(basename "$multi" .pdb)
+                total=$(wc -l < "$multi")
+                mkdir "$ligands"/$LIG
+                mv $multi "$ligands"/$LIG
+                obabel "$ligands"/$LIG/*.pdb -O "$ligands"/"$LIG"/.pdb --split --unique cansmi &
+                obabel_pid=$!
+                ( 
+                  while [ -e "$ligands"/"$LIG"/"$LIG".smi ]; do                   
+                    rest=$(find "$ligands"/$LIG -maxdepth 1 -type f | wc -l)        
+                    progress=$(( rest * 100 / total  ))
+                    echo $progress
+                    sleep 0.1
+                  done
+                 ) | yad --splash --progress --text="Fragmenting \"$LIG\" files…" \
+                  --image=$CODOC_DIR/icons/progressP.png \
+                  --auto-close \
+                  --skip-taskbar \
+                  --center --width=400 --borders=10 \
+                  --no-buttons &
+                wait $obabel_pid
+                rm "$ligands"/"$LIG"/"$LIG".pdb
 
             elif [[ "$multi" == *.pdbqt ]]; then
-                # There are no multi-model .pdbqt files so there is no need to split 
-                LIG=$(basename $multi .smi)           
-                mkdir "$ligands"/"$LIG"
-                cp $multi "$ligands"/"$LIG"
-                obabel "$ligands"/"$LIG"/*.pdbqt -O "$ligands"/"$LIG"/.pdbqt --split -h
-                rm $multi
+                # Multi-model .pdbqt files are not common. 
+                LIG=$(basename "$multi" .pdbqt)
+                mkdir "$ligands"/$LIG
+                mv $multi "$ligands"/$LIG
+                obabel "$ligands"/$LIG/*.pdbqt -O "$ligands"/"$LIG"/.pdbqt --split --unique cansmi
+                rm "$ligands"/"$LIG"/"$LIG".pdbqt
 
             else
-                dialog --title "ATTENTION" --yesno "FILE FORMAT NOT RECOGNIZED. DO YOU WANT TO DELETE THE FILE "$multi"?" 10 60 ;
-                    if [ $? -eq 0 ]; then
-                        rm $multi
-                    else
-                        mkdir "$HOME/MGLTools-1.5.7/doc/NOT_RECOGNIZED_LIGANDS/"
-                        mv $multi "$HOME/MGLTools-1.5.7/doc/NOT_RECOGNIZED_LIGANDS/"
-                    fi                      
+                if yad  --question --center --title="CODOC - QUESTION ?" \
+                        --width=500 --height=200 \
+                        --text="FILE FORMAT NOT RECOGNIZED. DO YOU WANT TO DELETE THE FILE \"$multi\"?" \
+                        --text-align=center \
+                        --button="NO":1 --button="YES":0 --buttons-layout=edge \
+                        --borders=10 \
+                        --image="$HOME"/MGLTools-1.5.7/doc/icons/questionP.png; then
+                    rm "$multi"
+                else
+                    mkdir "$ligands_results/NOT_RECOGNIZED_LIGANDS/"
+                    mv "$multi" "$ligands_results/NOT_RECOGNIZED_LIGANDS/"
+                fi          
             fi
         fi
     done
 fi
 
-# CHECK IF THERE ARE SUBFOLDERS IN THE LIGANDS FOLDER:
-quantity_subfolders=$(find "$ligands" -mindepth 1 -maxdepth 1 -type d ! -path "$ligands" | wc -l)
+kill $YAD_PID
 
-if [ "$quantity_subfolders" -eq 0 ]; then
-    dialog --title "ATTENTION" --msgbox "THE LIGANDS FOLDER DOES NOT HAVE ANY SUB FOLDER!" 10 60
-elif [ "$quantity_subfolders" -gt 0 ]; then
-    for L in "$ligands/"*/; do
-        quantity_files=$(find "$L" -maxdepth 1 -type f | wc -l)
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="THE SPLIT OF THE LIGANDS IS FINISHED! \nCHECK THE LIGANDS FOLDER" \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                                       FRAGMENTATION FOR BIG DIRECTORIES FUNCTION:                                             #
+#################################################################################################################################
+run_split_folder() {
+# Updating docking parameters according to user choices:
+data2="$CODOC_DIR/.form_data2.txt"
+max_lig="$(sed -n '3p' $data2)"
+
+yad --info --center --title="CODOC - DIRECTORIES FRAGMENTATION !" \
+    --text="MEMORY OTIMIZATION WITH BIG DIRECTORIES SPLIT...  \nPlease wait for completion !" \
+    --text-align=center --button="CANCEL":1 --buttons-layout=center --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/01P.png &
+YAD_PID=$!
+case $? in
+    1) # CANCEL BUTTON
+        break
+        kill $YAD_PID
+        show_ligand_menu
+        return
+        ;;
+esac
+
+# Iterate over all subfolders in the main directory
+for SUBFOLDER in "$ligands"/*; do
+    if [ -d "$SUBFOLDER" ]; then
+        # Count the number of files in the subfolder
+        FILE_COUNT=$(find "$SUBFOLDER" -type f | wc -l)
+
+        if [ "$FILE_COUNT" -gt "$max_lig" ]; then
+            echo "Subfolder $SUBFOLDER contains $FILE_COUNT files. Fragmenting..."
+
+            # Create a new subfolder with the original name and a sequential number
+            COUNTER=1
+            NEW_FOLDER="$SUBFOLDER"_"$COUNTER"
+            mkdir -p "$NEW_FOLDER"
+
+            # Initialize the file counter
+            FILES_IN_NEW_FOLDER=0
+
+            # Move files to the new subfolders
+            for FILE in "$SUBFOLDER"/*; do
+                mv "$FILE" "$NEW_FOLDER"/
+                FILES_IN_NEW_FOLDER=$((FILES_IN_NEW_FOLDER + 1))
+
+                # Check if the new subfolder has reached $max_lig files
+                if [ "$FILES_IN_NEW_FOLDER" -ge "$max_lig" ]; then
+                    COUNTER=$((COUNTER + 1))
+                    NEW_FOLDER="$SUBFOLDER"_"$COUNTER"
+                    mkdir -p "$NEW_FOLDER"
+                    FILES_IN_NEW_FOLDER=0
+                fi
+            done
+
+            echo "Fragmentation completed for subfolder $SUBFOLDER with max 50000 ligands."
+        else
+            echo "Subfolder $SUBFOLDER contains less than 100.000 files. It will not be fragmented."
+        fi
+    fi
+done
+# Remove all empty subfolders
+find "$ligands" -type d -empty -delete
+echo "All empty subfolders have been removed."
+kill $YAD_PID 
+
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="FOLDERS OVER \"$max_lig\" LIGANDS WERE FRAGMENTED INTO SUBFOLDERS OF UP TO \"$max_lig\" LIGANDS. CHECK THE SUBFOLDERS!" \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --height=100 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                           GENERATING LIPINSKI PARAMETERS FOR THE DATABASE (CSV DATASET):                                      #
+#################################################################################################################################
+run_lipinski_parameters() {
+    LIPINSKI_DIR="$ligands_results/LIPINSKI_DATA"
+    mkdir -p "$LIPINSKI_DIR"  # Create directory if it doesn't exist
+
+    yad --info --center --title="CODOC - LIPINSKI PARAMETERS !" \
+        --text="GENERATING LIPINSKI PARAMETERS ! ... \nFOR THE DATABASE (SMI AND CSV DATASET) \nPlease wait for completion !" \
+        --text-align=center --button="CANCEL":1 --buttons-layout=center --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/01P.png &
+    YAD_PID=$!
+    case $? in
+        1) # CANCEL BUTTON
+            break
+            kill $YAD_PID
+            show_ligand_menu
+            return
+            ;;
+    esac
+
+    # Function to generate Lipinski parameters
+    convert_to_lipinski() {
+        local input_L="$1"
+        local input_ext="$2"
+        local output_smi="$3"
+        local output_csv="$4"
+        for file in "$L"/*."$input_ext"; do
+            LIG=$(basename "$file" ."$input_ext")
+            obabel "$file" -O "$LIG".smi --title "$LIG" --addtotitle " $DIR" --append "MW logP HBA2 HBD rotors TPSA" -n
+            cat "$LIG".smi >> "$output_smi"
+            rm "$LIG".smi
+        done
+        cat "$output_smi" >> "$output_csv"
+    }
+
+    # CONVERTING LIGANDS TO SMILES FILES WITH LIPINSKI PARAMETERS:
+    for L in "$ligands"/*/; do
+        DIR=$(basename "$L")
+        mkdir -p "$LIPINSKI_DIR/$DIR/SMI"
+        mkdir -p "$LIPINSKI_DIR/$DIR/CSV"
         
-        if [ "$quantity_files" -eq 0 ]; then
-            dialog --title "ATTENTION" --msgbox "THERE ARE NO FILES IN THE $L SUBFOLDER. WAIT FOR THE FOLDER TO BE DELETED!" 10 60
-            rm -r "$L" || continue
-        elif [ "$quantity_files" -gt 0 ]; then
-            export L pH cpu
+        first_file=$(find "$L" -maxdepth 1 -type f | head -n 1)
+        if [[ -n "$first_file" ]]; then  # Check if there is at least one file in the subfolder
+            extension="${first_file##*.}"
+            output_smi="$L""$DIR".smi
+            output_csv="$L""$DIR".csv
+            echo "Smiles Name DB MW logP HBA2 HBD rotors TPSA" >> "$output_csv"
 
-            find "$L" -type f \( -name '*.sdf' -o -name '*.mol2' -o -name '*.smi' -o -name '*.pdb' \) | \
-            parallel -j "$cpu" '
-                file={};
-                ext="${file##*.}";
-                base=$(basename "$file" ".$ext");
-                case "$ext" in
-                    sdf)
-                        obabel "$file" -O "$L/$base.pdbqt" --pH "$pH" --gen3d --partialcharge gasteiger --minimize --sd --ff GAFF --n 2000
-                        rm "$file"
-                        ;;
-                    mol2)
-                        obabel "$file" -O "$L/$base.pdbqt" --pH "$pH" --partialcharge gasteiger --minimize --sd --ff GAFF --n 2000
-                        rm "$file"
-                        ;;
-                    smi)
-                        obabel "$file" -O "$L/$base.pdbqt" --pH "$pH" --gen3d --partialcharge gasteiger --minimize --sd --ff GAFF --n 2000
-                        rm "$file"
-                        ;;
-                    pdb)
-                        obabel "$file" -O "$L/$base.pdbqt" --pH "$pH" --partialcharge gasteiger --minimize --sd --ff GAFF --n 2000
-                        rm "$file"
-                        ;;
-                    pdbqt)
-                        echo "Formato do arquivo em $L já é .pdbqt"
-                        ;;
-                    *)
-                        dialog --title "ATTENTION" --yesno "FILE FORMAT NOT RECOGNIZED. DO YOU WANT TO DELETE THE FOLDER $L?" 10 60
-                        if [ $? -eq 0 ]; then
-                            rm -r "$L"
-                        else
-                            mkdir -p "$HOME/MGLTools-1.5.7/doc/NOT_RECOGNIZED_LIGANDS/"
-                            mv "$L" "$HOME/MGLTools-1.5.7/doc/NOT_RECOGNIZED_LIGANDS/"
-                        fi
-                        ;;
-                esac
-            '
+            convert_to_lipinski "$L" "$extension" "$output_smi" "$output_csv"
+
+            echo "Converted $DIR.smi >>> $DIR.csv"
+            mv "$output_smi" "$LIPINSKI_DIR/$DIR/SMI"
+            mv "$output_csv" "$LIPINSKI_DIR/$DIR/CSV"
+        else
+            echo "No files found in the subfolder $L"
         fi
     done
+    kill $YAD_PID
+    yad --info --center \
+        --title="CODOC - CONFIRMATION !" \
+        --text="The .smi and .csv files have been generated for $DIR." \
+        --text-align=center \
+        --button="OK":0 --buttons-layout=center \
+        --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/okP.png
+
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                               FUNCTION TO RUN DRUGGABILITY FILTER:                                                            #
+#################################################################################################################################
+run_druggability_filter() {
+form_data5=$(
+yad --form --center --title="LIPINSKI RULES FILTER" \
+    --text="Change the fields below if necessary:" \
+    --image="$CODOC_DIR/icons/configP.png" \
+    --width=600 --height=400 \
+    --separator="\n" \
+    --button="LIGAND MENU":1 --button="RUN FILTER":0 --buttons-layout=edge \
+    --field="Min. Molecular Weight:":NUM "$mw_1" \
+    --field="Max. Molecular Weight:":NUM "$mw_2" \
+    --field="Log P range:":NUM "$lp_2" \
+    --field="Max. Rotatable Bonds:":NUM "$rb" \
+    --field="Max. H Donor:":NUM "$hd" \
+    --field="Max. H Acceptor:":NUM "$ha" \
+    --field="Max. TPSA:":NUM "$tpsa" \
+)
+
+# Check if the user selected an option or pressed a button
+case $? in
+    0)  # RUN FILTER button pressed
+        yad --info --center \
+            --title="CODOC - WARNING !" \
+            --text="CAREFUL! \nTHIS FILTER WILL CREATE EMPTY FILES FOR \nLIGANDS THAT DO NOT MEET THE DRUGACABILITY FILTER. \nDO NOT APPLY TO FILES ALREADY CONVERTED TO .PDBQT! \nNEXT, REMOVE EMPTY FILES." \
+            --text-align=center \
+            --button="LIGAND MENU":1 --button="OK":0 --buttons-layout=center \
+            --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/warningP.png
+            case $? in
+                0) # OK BUTTON
+                    touch .form_data5.txt
+                    echo "$form_data5" > .form_data5.txt
+                    # Replace commas with dots and read values into variables
+                    sed -i 's/,/./g' .form_data5.txt
+                    data5="$CODOC_DIR"/.form_data5.txt
+                    mw_1="$(sed -n '1p' $data5)"
+                    mw_2="$(sed -n '2p' $data5)"
+                    lp_2="$(sed -n '3p' $data5)"
+                    rb="$(sed -n '4p' $data5)"
+                    hd="$(sed -n '5p' $data5)"
+                    ha="$(sed -n '6p' $data5)"
+                    tpsa="$(sed -n '7p' $data5)"
+                    
+                    # Ensure the variables are exported so they are available later
+                    export mw_1 mw_2 lp_2 rb hd ha tpsa
+
+                    # Iterate through directories and process files
+                    for dir in "$ligands"/*/; do
+                        nL=$(basename "$dir")
+                        # Iterate through files in each directory
+                        for file in "$dir"*; do
+                            nl=$(basename "$file")
+                            obabel "$file" -O "$file" --filter "MW>$mw_1 & MW<$mw_2 & logP<$lp_2 & rotors<$rb & HBA2<$ha & HBD<$hd & TPSA<$tpsa"
+                        done
+                    done
+                    show_ligand_menu
+                    ;;
+                1) # LIGAND MENU BUTTON
+                    show_ligand_menu ;;
+            esac
+        ;;
+    1)  # LIGAND MENU button pressed
+        show_ligand_menu
+        ;;
+esac
+}
+
+#################################################################################################################################
+#                                       LIGAND CONVERSION FUNCTION FOR PDBQT:                                                   #
+#################################################################################################################################
+run_ligands_conversion() {
+# INITIAL USER GUIDELINES:
+yad --info --center \
+    --title="CODOC - INFORMATION !" \
+    --text="\nSINGLE LIGAND FILES MUST BE PLACED IN \n'SUB-FOLDERS' WITHIN THE LIGANDS FOLDER. \nNAME THESE SUB-FOLDERS WITH ACRONYMS \nTHAT IDENTIFY THE LIGAND DATABASE!" \
+    --text-align=center \
+    --width=500 --height=100 --borders=10 \
+    --image=$CODOC_DIR/icons/infoP.png
+if [ $? -eq 1 ]; then
+    show_ligand_menu
 fi
 
-dialog --title "ATTENTION" --msgbox "THE PREPARATION OF THE LIGANDS IS FINISHED! CHECK THE LIGANDS FOLDER" 10 60 ;
-show_main_menu
+yad --info --center \
+    --title="CODOC - INFORMATION !" \
+    --text="\nONLY SOME FILE FORMATS ARE ACCEPTED: \n.mol2/.sdf/.smi/.pdb. \nMAKE SURE THERE ARE NO FILES \nWITH OTHER EXTENSIONS! \nMAKE A BACKUP OF YOUR ORIGINAL FILES, IN \nANOTHER FOLDER, AS THE CONVERSION WILL REMOVE THEM!" \
+    --text-align=center \
+    --width=500 --height=100 --borders=10 \
+    --image=$CODOC_DIR/icons/infoP.png
+if [ $? -eq 1 ]; then
+    show_ligand_menu
+fi
+
+process_sdf2D() {
+    local FILE="$1"
+        nl=$(basename "$FILE" .sdf)
+        echo  ""$nl"_2D."$EXT" >>>> "$nl"_3D.pdbqt"
+        obabel "$nl".sdf -O "$nl".mol2 --gen3d "$vel" --partialcharge gasteiger
+        smiles=$(obabel "$nl".mol2 -osmi | awk '{print $1}' | sed 's/\[C\]/C/g')
+        obabel "$nl".mol2 -O "$nl".pdbqt -p "$pH" --minimize --sd --steps $steps --ff GAFF -r
+        sed -i '/^REMARK  Name/d' "$nl".pdbqt
+        sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
+        rm "$FILE"
+}
+
+process_smi2D() {
+    local FILE="$1"
+    nl=$(basename "$FILE" .smi)
+    smiles=$(awk '{print $1}' "$nl".smi | sed 's/\[C\]/C/g')
+    obabel "$nl".smi -O "$nl".pdbqt -p "$pH" --gen3d "$vel" --partialcharge gasteiger --minimize --sd --steps "$steps" --ff GAFF -r
+    sed -i '/^REMARK  Name/d' "$nl".pdbqt
+    sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
+}
+
+process_files3D() {
+    local FILE="$1"
+    local EXT="${FILE##*.}"
+        nl=$(basename "$FILE" ."$EXT")
+        echo  ""$nl"_3D."$EXT" >>>> "$nl"_3D.pdbqt"
+        obabel "$nl"."$EXT" -O "$nl".pdbqt -p "$pH" --partialcharge gasteiger --minimize --sd --steps $steps --ff GAFF -r
+        smiles=$(obabel "$nl"."$EXT" -osmi | awk '{print $1}' | sed 's/\[C\]/C/g')
+        sed -i '/^REMARK  Name/d' "$nl".pdbqt
+        sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
+        rm "$FILE"
+}
+
+process_pdbqt() {
+    local FILE="$1"
+        nl=$(basename "$FILE" .pdbqt)
+        echo  ""$nl".pdbqt >>>> "$nl"_smiles.pdbqt"
+        smiles=$(obabel "$nl".pdbqt -osmi | awk '{print $1}' | sed 's/\[C\]/C/g')
+        obabel "$nl".pdbqt -O "$nl".pdbqt -p "$pH" --minimize --sd --steps $steps --ff GAFF -r
+        sed -i '/^REMARK  Name/d' "$nl".pdbqt
+        sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
+}
+process_mol() {
+    local FILE="$1"
+        nl=$(basename "$FILE" .mol2)
+        echo  ""$nl".mol2 >>>> "$nl"_smiles.pdbqt"
+        smiles=$(obabel "$nl".mol2 -osmi | awk '{print $1}' | sed 's/\[C\]/C/g')
+        obabel "$nl".mol2 -O "$nl".pdbqt -p "$pH" --partialcharge gasteiger --minimize --sd --steps $steps --ff GAFF -r
+        sed -i '/^REMARK  Name/d' "$nl".pdbqt
+        sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
+}
+
+for L in "$ligands"/*/; do
+    cd "$L"
+    nL=$(basename "$L")
+    # Failure directory
+    failure="$failure_dir/$nL"
+    mkdir -p "$failure"  # Create the directory only if it doesn't exist
+
+    # Create the list of files in the directory
+    list="$ligands/list_$nL.txt"
+    touch "$list"
+    for FILE in "$L"*; do
+        echo "$FILE" >> "$list"
+    done
+
+    # Check the first file:
+    first_file=$(find "$L" -maxdepth 1 -type f | head -n 1)
+    case "${first_file##*.}" in
+        sdf)
+            # Performing conversion with gnu parallel and OpenBabel for 2D sdf:
+            # Check the third element of the sixth line in the first file:
+            count=$(awk '$3 == "0.0000"' "$first_file" | wc -l)
+            if [[ $count -gt 1 ]]; then               
+                # Performing conversion with gnu parallel and OpenBabel for 2D sdf:
+                export -f process_sdf2D
+                total=$(wc -l < "$list")
+                echo "SDF_2D $total"
+                parallel -j "$cpu" --timeout "${time_limit}" -a "$list" process_sdf2D {} &
+                parallel_pid=$!
+                (
+                  while kill -0 $parallel_pid 2>/dev/null; do
+                    rest=$(ls "$L"/*.pdbqt 2>/dev/null | wc -l)
+                    progress=$(( rest * 100 / total ))
+                    echo $progress
+                    sleep 0.2
+                  done
+                ) | yad --splash --progress --text="Converting \"$nL\" files…" \
+                  --image=$CODOC_DIR/icons/progressP.png \
+                  --auto-close \
+                  --skip-taskbar \
+                  --center --width=400 --borders=10 \
+                  --button="CANCEL":1 --buttons-layout=center &
+                yad_pid=$!
+
+                wait $yad_pid
+                yad_exit_code=$?
+
+                if [ $yad_exit_code -eq 1 ]; then
+                    kill $parallel_pid
+                    mkdir "$canceled/$nL"
+                    mv "$ligands/$nL" "$canceled/$nL"
+                    echo "Conversion cancelled by user."
+                    show_ligand_menu
+                fi
+
+                wait $parallel_pid
+                rm "$L"*.mol2
+                                    
+            else
+                # Performing conversion with gnu parallel and OpenBabel for 3D sdf:
+                export -f process_files3D
+                total=$(wc -l < "$list")
+                echo "SDF 3D $total"
+                parallel -j "$cpu" --timeout "${time_limit}" -a "$list" process_files3D {} &
+                parallel_pid=$!
+
+                (
+                  while kill -0 $parallel_pid 2>/dev/null; do
+                    rest=$(ls "$L"/*.pdbqt 2>/dev/null | wc -l)
+                    progress=$(( rest * 100 / total ))
+                    echo $progress
+                    sleep 0.2
+                  done
+                ) | yad --splash --progress --text="Converting \"$nL\" files…" \
+                  --image=$CODOC_DIR/icons/progressP.png \
+                  --auto-close \
+                  --skip-taskbar \
+                  --center --width=400 --borders=10 \
+                  --button="CANCEL":1 --buttons-layout=center &
+                yad_pid=$!
+
+                wait $yad_pid
+                yad_exit_code=$?
+
+                if [ $yad_exit_code -eq 1 ]; then
+                    kill $parallel_pid
+                    echo "Conversion cancelled by user."
+                    show_ligand_menu
+                fi
+
+                wait $parallel_pid
+                rm "$L"*.mol2
+
+                # Move not converted .sdf files to the failure directory
+                for FILE in "$L"*.sdf; do
+                    [ -e "$FILE" ] && mv "$FILE" "$failure" && echo "Moving $FILE to $failure"
+                done
+            fi
+            ;;                       
+        smi)
+            # Performing conversion with gnu parallel and OpenBabel:
+            export -f process_smi2D
+            total=$(wc -l < "$list")
+            parallel -j "$cpu" --timeout "${time_limit}" -a "$list" process_smi2D {} &
+            parallel_pid=$!                
+            (
+              while kill -0 $parallel_pid 2>/dev/null; do
+                rest=$(find "$L" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
+                progress=$(( rest * 100 / total ))
+                echo $progress
+                sleep 0.2
+              done
+            ) | yad --splash --progress --text="Converting \"$nL\" files…" \
+              --image=$CODOC_DIR/icons/progressP.png \
+              --auto-close \
+              --skip-taskbar \
+              --center --width=400 --borders=10 \
+              --button="CANCEL":1 --buttons-layout=center &
+            if [ $? -eq 1 ]; then
+                kill $parallel_pid
+                show_ligand_menu
+            fi
+            wait $parallel_pid
+            rm "$L"*.mol2
+        
+            # Move not converted .smi files to the failure directory
+            for FILE in "$L"*.smi; do
+                [ -e "$FILE" ] && mv "$FILE" "$failure" && echo "Moving $FILE to $failure"
+            done
+            ;;
+        pdb)
+            # Performing conversion with gnu parallel and OpenBabel:
+            export -f process_files2D
+            total=$(wc -l < "$list")
+            parallel -j "$cpu" --timeout "${time_limit}" -a "$list" process_files3D {} &
+            parallel_pid=$!                
+            (
+              while kill -0 $parallel_pid 2>/dev/null; do
+                rest=$(find "$L" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
+                progress=$(( rest * 100 / total ))
+                echo $progress
+                sleep 0.2
+              done
+            ) | yad --splash --progress --text="Converting \"$nL\" files…" \
+              --image=$CODOC_DIR/icons/progressP.png \
+              --auto-close \
+              --skip-taskbar \
+              --center --width=400 --borders=10 \
+              --button="CANCEL":1 --buttons-layout=center &
+                if [ $? -eq 1 ]; then
+                    kill $parallel_pid
+                    show_ligand_menu
+                fi
+            wait $parallel_pid
+            rm "$L"*.mol2
+        
+            # Move not converted .pdb files to the failure directory
+            for FILE in "$L"*.pdb; do
+                [ -e "$FILE" ] && mv "$FILE" "$failure" && echo "Moving $FILE to $failure"
+            done
+            ;;
+        mol2)
+            # Performing conversion with gnu parallel and OpenBabel:
+            export -f process_mol
+            total=$(wc -l < "$list")
+            parallel -j "$cpu" --timeout "${time_limit}" -a "$list" process_mol {} &
+            parallel_pid=$!                
+            (
+              while kill -0 $parallel_pid 2>/dev/null; do
+                rest=$(ls "$L"/*.pdbqt 2>/dev/null | wc -l)
+                progress=$(( rest * 100 / total ))
+                echo $progress
+                sleep 0.2
+              done
+            ) | yad --splash --progress --text="Converting \"$nL\" files…" \
+              --image=$CODOC_DIR/icons/progressP.png \
+              --auto-close \
+              --skip-taskbar \
+              --center --width=400 --borders=10 \
+              --no-buttons &
+            wait $parallel_pid
+        
+            # Move not converted .mol2 files to the failure directory
+            for FILE in "$L"*.mol2; do
+                [ -e "$FILE" ] && mv "$FILE" "$failure" && echo "Moving $FILE to $failure"
+            done
+            ;;
+        pdbqt)
+            if yad --question --center --title="CODOC - QUESTION ?" \
+                --width=500 --borders=10 \
+                --text="THE FILES IN THE \"$nL\" FOLDER ARE ALREADY OF THE .PDBQT TYPE! DO YOU WANT TO RECONVERT THEM EVEN SO AS TO GENERATE THE HEADERS WITH SMILES AND NAME?" \
+                --text-align=center \
+                --button="NO":1 --button="YES":0 --buttons-layout=edge \
+                --image=$CODOC_DIR/icons/questionP.png; then
+
+                # Performing conversion with gnu parallel and OpenBabel:
+                export -f process_pdbqt
+                parallel -j "$cpu" --timeout "${time_limit}" -a "$list" process_pdbqt {} &
+                parallel_pid=$!                
+                yad --info --center \
+                    --title="CODOC - CONFIRMATION !" \
+                    --text="Please wait for it to finish..." \
+                    --text-align=center \
+                    --width=300 --borders=10 --no-buttons \
+                    --image=$CODOC_DIR/icons/waitP.png &
+                YAD_PID=$!
+                wait $parallel_pid
+                kill $YAD_PID
+            fi
+            ;;
+        *)
+            yad --info --center \
+                --title="CODOC - WARNING !" \
+                --text="FILES IN $L FOLDER ARE NOT RECOGNIZED !" \
+                --text-align=center \
+                --button="OK":0 --buttons-layout=center \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/warningP.png
+            ;;
+    esac
+    mv "$list" "$ligands_results"            
+    cd ../    
+done
+
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="THE CONVERSION OF THE LIGANDS IS FINISHED! CHECK THE LIGANDS FOLDER" \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                                       LIGAND RECOVERY FUNCTION:                                                               #
+#################################################################################################################################
+run_pdbqt_recovery() {
+    process_recovery(){
+        local FILE="$1"
+        local EXT="${FILE##*.}"
+            nl=$(basename "$FILE" ."$EXT")
+            echo  ""$nl"."$EXT" >>>> "$nl".pdbqt"
+            smiles=$(awk 'NR==2 && /^REMARK SMILES/ {print $3}' | sed 's/\[C\]/C/g' | tr 'C' 'c')
+            rm "$FILE"
+            obabel "$smiles" -O "$nl".mol2 -h --gen3d "$vel" --partialcharge gasteiger
+            obabel "$nl".mol2 -O "$nl".pdbqt -p "$pH" --minimize --sd --steps "$steps" --ff GAFF -r
+            sed -i '/^REMARK  Name/d' "$nl".pdbqt
+            sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
+            rm "$nl".mol2
+    }
+
+    for F in "$failure_dir"/*/; do
+        nF=$(basename "$F")
+        list="$failure_dir"/"$nF"_recovery.txt
+        touch "$list"
+        for FILE in "$F"*; do
+            echo "$FILE" >> "$list"
+        done
+        # Performing conversion with gnu parallel and OpenBabel:
+        export -f process_recovery
+        total=$(wc -l < "$list")
+        parallel -j "$cpu" --timeout "${time_limit2}" -a $list process_recovery {} &
+        parallel_pid=$!                
+        (
+          while kill -0 $parallel_pid 2>/dev/null; do
+            rest=$(find "$F" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
+            progress=$(( rest * 100 / total ))
+            echo $progress
+            sleep 0.2
+          done
+        ) | yad --splash --progress --text="Recovering \"$nF\" files…" \
+          --image=$CODOC_DIR/icons/helpP.png \
+          --auto-close \
+          --skip-taskbar \
+          --center --width=400 --borders=10 \
+          --no-buttons &
+        wait $parallel_pid
+        rm "$L"*.mol2
+        # Restore successfully converted .pdbqt files
+        for lig in "$F"*.pdbqt; do
+            FILE=$(basename $lig .pdbqt)
+            # Check if there is more than one line with "0.000 0.000"
+            count=$(grep -Ec '^ATOM.*0\.000[[:space:]]+0\.000' "$lig")           
+            if [[ $count -gt 1 ]]; then
+                # Kept file to the failure folder
+                echo "File: $FILE in $nF with multiple coordinates 0.000 was kept in the failure folder"
+            else
+                mv "$lig" "$ligands/$nF" && echo "Moving $FILE to "$ligands/$nF""
+            fi
+        done
+        mv "$list" "$failure_dir"
+    done   
+
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="THE LIGANDS RECOVERY HAVE BEEN FINALIZED! CHECK IN THE FOLDER!" \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                                       LIGAND REJECTED FUNCTION FOR PDBQT:                                                     #
+#################################################################################################################################
+run_pdbqt_rejected() {
+
+    process_rejected() {
+        local FILE="$1"
+        local failure="$2"
+        local nL="$3"
+        local nl=$(basename "$FILE" .pdbqt)
+        # Check if there is more than one line with "0.000 0.000"
+        count_ZEROS=$(grep -Ec '^ATOM\s*0\.000[[:space:]]+0\.000' "$FILE")
+        count_TORSDOF=$(grep -c "^TORSDOF" "$FILE")
+
+        if [[ $count_ZEROS -gt 1 ]]; then
+            mv "$FILE" "$failure/$nl.pdbqt"
+            echo "File: "$nL"/"$nl" with multiple 0.000 coordinates has been moved to failure folder"
+        elif [[ $count_TORSDOF -gt 1 ]]; then
+            mv "$FILE" "$failure/$nl.pdbqt"
+            echo "Error TORSDOF found in file: "$nL"/"$nl""
+        elif grep -E "^ATOM.*\b($reject)\b" "$FILE"; then
+            mv "$FILE" "$failure/$nl.pdbqt"
+            echo "File: "$nL"/"$nl" with atoms not recognized by Vina-GPU has been moved to failure folder"
+        elif grep -E "ATOM.*[0-9]{20,}" "$FILE" > /dev/null; then
+            mv "$FILE" "$failure/$nl.pdbqt"
+            echo "Error BIG NUMBER found in file: "$nL"/"$nl""
+        fi
+    }
+
+    # Iterate over subdirectories in $ligands
+    for L in "$ligands"/*/; do
+        nL=$(basename "$L")
+        failure="$failure_dir/$nL"
+        mkdir -p "$failure"  # Create the directory if it doesn't exist
+        list="$failure"/"$nL"_rejected.txt
+        touch "$list"
+
+        # Iterate over .pdbqt files
+        for FILE in "$L"*.pdbqt; do
+            nl=$(basename "$FILE" .pdbqt)
+            echo "$FILE" >> "$list"
+        done
+
+        # Performing conversion with gnu parallel and OpenBabel:
+        total=$(wc -l < "$list")
+        if [[ $total -eq 0 ]]; then
+            echo "No files to process in $L"
+            continue
+        fi
+        export -f process_rejected
+        parallel -j "$cpu" --timeout "${time_limit}" process_rejected {} "$failure" "$nL" :::: "$list" &
+        parallel_pid=$!
+
+        (
+            while kill -0 $parallel_pid 2>/dev/null; do
+                rest=$(find "$failure" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
+                progress=$(( rest * 100 / total ))
+                echo $progress
+                sleep 0.2
+            done
+        ) | yad --splash --progress --text="Evaluating base ligands \"$nL\"…" \
+          --image=$CODOC_DIR/icons/helpP.png \
+          --auto-close \
+          --skip-taskbar \
+          --center --width=400 --borders=10 \
+          --no-buttons &
+        YAD_PID=$!
+
+        wait $parallel_pid
+        kill $YAD_PID
+    done
+
+    # YAD notification
+    yad --info --center \
+        --title="CODOC - CONFIRMATION !" \
+        --text="THE LIGANDS REJECTION HAVE BEEN FINALIZED! CHECK IN THE FAILURE FOLDER!" \
+        --text-align=center \
+        --button="OK":0 --buttons-layout=center \
+        --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/okP.png
+
+    show_ligand_menu
+}
+
+#################################################################################################################################
+#                                       EMPTY LIGAND FUNCTION:                                                        #
+#################################################################################################################################
+run_empty() {
+# Create empty folder
+empty="$ligands_results/EMPTY_LIGANDS"
+mkdir -p $empty
+
+# Updating variables:
+data2="$CODOC_DIR/.form_data2.txt"
+file_size="$(sed -n '1p' $data2)"
+
+yad --info --center --title="CODOC - REMOVE EMPTY FILE !" \
+    --text="Removing ligands files with sizes smaller than $file_size bytes ! ... Please wait for completion !" \
+    --text-align=center --button="CANCEL":1 --buttons-layout=center --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/01P.png &
+YAD_PID=$!
+case $? in
+    1) # CANCEL BUTTON
+        break
+        kill $YAD_PID
+        show_ligand_menu
+        return
+        ;;
+esac
+
+# Iterate through all directory
+for dir in "$ligands"/*/; do
+    DEST_DIR=$(basename $dir)
+    mkdir -p "$empty/$DEST_DIR"
+    touch "$empty/empty_list.txt"
+    # Iterate through all files in the source directory
+    for file in "$dir"*; do
+        # Check if it is a file and if its size is less than 50 bytes
+        if [ -f "$file" ] && [ $(stat -c%s "$file") -lt "$file_size" ]; then
+            # Create directory and move the file to the destination directory
+            mv "$file" "$empty/$DEST_DIR"
+            echo "Empty: $file"
+            echo "$file" >> "$empty/empty_list.txt"
+        fi
+    done
+    # Check empty folders:
+    rmdir "$dir" 2>/dev/null && echo "Empty: $dir"
+done
+# Remove all empty subfolders
+find "$dir" -type d -empty -delete
+echo "All empty subfolders have been removed."
+kill $YAD_PID
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="THE LIGANDS EMPTY HAVE BEEN MOVED! CHECK EMPTY_LIST IN THE \"$empty\" FOLDER!" \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                               FUNCTION TO CONFIGURE COGEN3D PARAMETERS:                                                       #
+#################################################################################################################################
+cogen3d_settings_form() {
+form_data3=$(
+yad --form --center --title="COGEN3D CONFIGURATION PARAMETERS" \
+    --text="Change the fields below if necessary:" \
+    --image="$CODOC_DIR/icons/configP.png" \
+    --width=600 --height=600 \
+    --separator="\n" \
+    --button="LIGAND MENU":1 --button="OK":0 --buttons-layout=edge \
+    --field="Min. Molecular Weight:":NUM "$mw_1" \
+    --field="Max. Molecular Weight:":NUM "$mw_2" \
+    --field="Min. Log P:":CBE "0"\!"-6"!"-5"!"-4"\!"-3"\!"-2"\!"-1"\!"0" \
+    --field="Max. Log P:":CBE "$lp_2" \
+    --field="Max. Rotatable Bonds:":NUM "$rb" \
+    --field="Max. H Donor:":NUM "$hd" \
+    --field="Max. H Acceptor:":NUM "$ha" \
+    --field="Max. TPSA:":NUM "$tpsa" \
+    --field="pH:":NUM $pH\!0..100\!0.1\!2 \
+)
+
+# Check if the user selected an option or pressed a button
+case $? in
+    0)  # OK button
+        touch .form_data3.txt
+        echo "$form_data3" > .form_data3.txt
+        sed -i 's/,/./g' .form_data3.txt
+        # Updating docking parameters according to user choices:
+        data3="$CODOC_DIR/.form_data3.txt"
+        mw_1="$(sed -n '1p' $data3)"
+        mw_2="$(sed -n '2p' $data3)"
+        lp_1="$(sed -n '3p' $data3)"
+        lp_2="$(sed -n '4p' $data3)"
+        rb="$(sed -n '5p' $data3)"
+        hd="$(sed -n '6p' $data3)"
+        ha="$(sed -n '7p' $data3)"
+        tpsa="$(sed -n '8p' $data3)"
+        pH="$(sed -n '9p' $data3)"
+        export mw_1 mw_2 lp_1 lp_2 rb hd ha tpsa pH
+        show_ligand_menu
+        ;;
+    1)  # Main Menu button
+        show_ligand_menu
+        ;;
+esac
+}
+
+#################################################################################################################################
+#                               FUNCTION TO CONVERT WITH COGEN3D:                                                               #
+#################################################################################################################################
+run_cogen3d_conversion() {
+# INITIAL USER GUIDELINES:
+yad --info --center \
+    --title="CODOC - INFORMATION !" \
+    --text="MULTI-MODEL FILES MUST BE PLACED IN THE \"LIGANDS\" FOLDER. \nSUB-FOLDERS WILL BE GENERATED AFTER THE SPLIT!" \
+    --text-align=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/infoP.png
+if [ $? -eq 1 ]; then
+    show_ligand_menu
+fi
+yad --info --center \
+    --title="CODOC - INFORMATION !" \
+    --text="ONLY SOME FILE FORMATS ARE ACCEPTED \nFOR PDBQT CONVERSION: .sdf, .smi, .csv. \nMAKE SURE THERE ARE NO FILES WITH OTHER EXTENSIONS!" \
+    --text-align=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/infoP.png
+if [ $? -eq 1 ]; then
+    show_ligand_menu
+fi
+
+# Run CoGen3D:
+if [ -f "CoGen3D.py" ]; then
+    echo "Runing CoGen3D!"
+        python3 CoGen3D.py inp --codoc --ph "$pH" --mw_min "$mw_1" --mw_max "$mw_2" --logp_min "$lp_1" --logp_max "$lp_2" --rotB_max "$rb" --hbd_max "$hd" --hba_max "$ha" --tpsa_max "$tpsa"
+    else
+        yad --info --center \
+            --title="CODOC - INFORMATION !" \
+            --text="THE COGEN3D.PY SCRIPT IS MISSING. COPY THE SCRIPT FILE TO THE CURRENT DIRECTORY: \"$CODOC_DIR\"!" \
+            --text-align=center \
+            --button="OK":0 --buttons-layout=center \
+            --width=500 --borders=10 \
+            --image=$CODOC_DIR/icons/attentionP.png
+fi
+show_ligand_menu
+}
+
+#################################################################################################################################
+#                                       FUNCTION FOR REMOVE BOND BREAKS IN MACROCYCLIC RINGS:                                   #
+#################################################################################################################################
+run_macrocyclic() {
+    MACROCYCLES_DIR="$ligands_results/MACROCYCLES"
+    mkdir -p "$MACROCYCLES_DIR"    
+    
+    yad --info --center --title="CODOC - MACROCYCLIC RINGS !" \
+        --text="REMOVING BOND BREAKS IN MACROCYCLIC RINGS ! ... Please wait for completion !" \
+        --text-align=center --button="CANCEL":1 --buttons-layout=center --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/01P.png &
+    YAD_PID=$!
+    case $? in
+        1) # CANCEL BUTTON
+            break
+            kill $YAD_PID
+            show_ligand_menu
+            return
+            ;;
+    esac
+
+    # Search for .pdbqt files within subfolders
+    for L in "$ligands"/*/; do
+        nL=$(basename "$L")
+        mkdir -p "$MACROCYCLES_DIR/$nL"
+
+        for FILE in "$L"/*.pdbqt; do
+            if grep -q '^ATOM.*\bG\b' "$FILE"; then
+                # Copy the file to the Macrocycles directory
+                cp "$FILE" "$MACROCYCLES_DIR/$nL"
+                
+                # Replace words only in lines that start with 'ATOM' and maintain character spacing
+                sed -i '/^ATOM/ {
+                    s/\bCG\b/C /g
+                    s/\bCG0/C  /g
+                    s/\bCG1/C  /g
+                    s/\bCG2/C  /g
+                    s/\bCG3/C  /g
+                    s/\bG0/C /g
+                    s/\bG1/C /g
+                    s/\bG2/C /g
+                    s/\bG3/C /g
+                    s/\bCG/C /g
+                    s/\bG\b/C/g
+                }' "$FILE"
+                
+                echo "$FILE fixed"
+            fi
+        done
+    done
+
+    # Remove any empty directories in the Macrocycles directory
+    find "$MACROCYCLES_DIR" -type d -empty -delete
+    kill $YAD_PID
+    yad --info --center \
+        --title="CODOC - CONFIRMATION!" \
+        --text="REMOVED BOND BREAKS IN MACROCYCLIC RINGS! CHECK IN THE FOLDER!" \
+        --text-align=center \
+        --button="OK":0 --buttons-layout=center \
+        --width=500 --borders=10 \
+        --image="$CODOC_DIR/icons/okP.png"
+
+    show_ligand_menu
 }
 
 #################################################################################################################################
 #                                       FUNCTION TO PERFORM RIGID DOCKING (WITH CPU):                                           #
 #################################################################################################################################
 run_rigid_docking_cpu() {
-dialog --title "ATTENTION" --msgbox "CHECK THE FILES IN THE TARGETS FOLDER: protein.pdbqt and grid.txt." 10 60  ;
+yad --info --center --title="CODOC - INFORMATION !" \
+    --text="CHECK THE FILES IN THE TARGETS FOLDER: protein.pdbqt and grid.txt." \
+    --text-align=center \
+    --button="CANCEL":1 --button="OK":0 --buttons-layout=edge \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/attentionP.png
 
-# Updating docking parameters according to user choices:
-data="$CODOC_DIR/.form_data.txt"
-sf="$(sed -n '1p' $data)"
-cpu="$(sed -n '2p' $data)"
-ext="$(sed -n '3p' $data)"
-num_modes="$(sed -n '5p' $data)"
-min_rmsd="$(sed -n '6p' $data)"
-energy_range="$(sed -n '7p' $data)"
-spacing="$(sed -n '8p' $data)"
-runs="$(sed -n '10p' $data)"
+if [ $? -eq 0 ]; then
+    (
+    # Creates the folder where all docking results and performance will be saved:
+    mkdir "$CODOC_DIR"/RIGID_DOCKING_RESULT_CPU_"$current_date"
+    RR="$CODOC_DIR/RIGID_DOCKING_RESULT_CPU_$current_date"
 
-# Creates the folder where all docking results and performance will be saved:
-mkdir "$CODOC_DIR"/RIGID_DOCKING_RESULT_CPU_"$current_date"
-RR="$CODOC_DIR/RIGID_DOCKING_RESULT_CPU_$current_date"
+    # Generates subfolders in the RIGID_DOCKING_RESULT_"$current_date" folder corresponding to the targets:
+    rsync -av --include=*/ --exclude=* $targets/* $RR
 
-# Generates subfolders in the RIGID_DOCKING_RESULT_"$current_date" folder corresponding to the targets:
-rsync -av --include=*/ --exclude=* $targets/* $RR
-
-# Start of the total time counter, total ligands count and targets count:
-start_time_total=$(date +%s)
-target_account=0
-crossings=0
-
-# Creates files where all docking results and total performance will be saved:
-rt=$RR/TOTAL_RESULT_RIGID_DOCKING_CPU_"$current_date".csv && touch "$rt"
-dt=$RR/TOTAL_PERFORMANCE_RIGID_DOCKING_CPU_"$current_date".txt && touch "$dt"
-
-# 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
-for P in "$targets/"*/; do
-    nP=$(basename "$P")
-    p="$targets/$nP/protein.pdbqt"
-
-    # Create subfolders for each group of ligands in the targets folder present in RESULTS:
-    rsync -av --include=*/ --exclude=* "$ligands"/* "$RR"/"$nP"
-
-    # Creates files where all partial docking results and performance for each target will be stargets:
-    rp=$RR/"$nP"/RIGID_DOCKING_RESULT_CPU_"$nP"_"$current_date".csv && touch "$rp"
-    dp=$RR/"$nP"/RIGID_DOCKING_PERFORMANCE_CPU_"$nP"_"$current_date".txt && touch "$dp"
+    # Start of the total time counter, total ligands count and targets count:
+    start_time_total=$(date +%s)
+    target_account=0
+    crossings=0
     
-    # Checks if the grid.txt file exists in the $targets/$nP folder
-    if [ -f "$targets/$nP/grid.txt" ]; then
-        # If the file exists, it updates the Grid Box parameters:
-        grid=/$targets/$nP/grid.txt
-        # Extract the line containing "center/size" and get the values:
-        center_line=$(grep 'center' "$grid")
-        c_x=$(echo "$center_line" | awk '{print $2}')
-        c_y=$(echo "$center_line" | awk '{print $3}')
-        c_z=$(echo "$center_line" | awk '{print $4}')
-        size_line=$(grep 'npts' "$grid")
-        s_x=$(echo "$size_line" | awk '{print $2}')
-        s_y=$(echo "$size_line" | awk '{print $3}')
-        s_z=$(echo "$size_line" | awk '{print $4}')
-    else
-        dialog --title "ATTENTION" --msgbox " The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT and save it in the $targets/$nP folder." 10 60  ;
+    # Creates files where all docking results and total performance will be saved:
+    rt=$RR/TOTAL_RESULT_RIGID_DOCKING_CPU_"$current_date".csv && touch "$rt"
+    dt=$RR/TOTAL_PERFORMANCE_RIGID_DOCKING_CPU_"$current_date".txt && touch "$dt"
+
+    # 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
+    for P in "$targets/"*/; do
+        nP=$(basename "$P")
+        p="$targets/$nP/protein.pdbqt"
+
+        # Create subfolders for each group of ligands in the targets folder present in RESULTS:
+        rsync -av --include=*/ --exclude=* "$ligands"/* "$RR"/"$nP"
+
+        # Creates files where all partial docking results and performance for each target will be stargets:
+        rp=$RR/"$nP"/RIGID_DOCKING_RESULT_CPU_"$nP"_"$current_date".csv && touch "$rp"
+        dp=$RR/"$nP"/RIGID_DOCKING_PERFORMANCE_CPU_"$nP"_"$current_date".txt && touch "$dp"
+        
+        # Checks if the grid.txt file exists in the $targets/$nP folder
         if [ -f "$targets/$nP/grid.txt" ]; then
             # If the file exists, it updates the Grid Box parameters:
             grid=/$targets/$nP/grid.txt
@@ -389,204 +2127,242 @@ for P in "$targets/"*/; do
             s_y=$(echo "$size_line" | awk '{print $3}')
             s_z=$(echo "$size_line" | awk '{print $4}')
         else
-            dialog --title "ATTENTION" --msgbox " The grid.txt file is STILL MISSING in the $targets/$nP folder. Correct and Restart the process" 10 60;
-            break
+            yad --info --center --title="CODOC - WARNING !" \
+                --text="The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT, save it in the $targets/$nP folder, and restart CODOC." \
+                --text-align=center \
+                --button="OK":0 --buttons-layout=center \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/warningP.png
+                if [ $? -eq 0 ]; then
+                    show_docking_menu
+                fi
         fi
-    fi
 
-    #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 CODOC VERSION 1.1.1:                                 #" >> "$dp"
-    echo "#                         Developed by Moisés Maia Neto - 06/2024                      #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-
-    # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
-    echo "" >> "$rp"
-    echo "TARGET","$nP" >> "$rp"
-
-
-    # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
-    echo "" >> "$rt"
-    echo "TARGET","$nP" >> "$rt"
-    echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rt"
-
-    ((target_account++)) # Adds 1 more to the target account
-
-    # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
-    for L in "$ligands/"*/; do
-        nL=$(basename "$L")
-
-        # Start of time counter and ligands account for the ligand databank:
-        start_time_P=$(date +%s)
-        account_ligands=0
-             
-        # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+        #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 CODOC VERSION 1.0 :                                  #" >> "$dp"
+        echo "#                         Developed by Moisés Maia Neto - 26/09/2024                   #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
-        echo "/////////////////////////////FROM LIGAND DATABANK: $nL://///////////////////////////////" >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
 
-        # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+        # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
         echo "" >> "$rp"
-        echo "LIGAND DATABANK","$nL" >> "$rp"
-        echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rp"
+        echo "TARGET	$nP" >> "$rp"
 
-        # 3rd FOR Loop executes docking on each .pdbqt ligand present in the subfolder:
-        for l in "$L"*.pdbqt; do
-            nl=$(basename "$l" .pdbqt)
-            echo "////////////////////////////////////////////////////////////"
-            echo "/Running the docking calculation // Ligand: $nl             "
-            echo "////////////////////////////////////////////////////////////"
-            mkdir "$RR/$nP/$nL/$nl"
-            
-            # Running the docking calculation
-            $vina --center_x $c_x --center_y $c_y --center_z $c_z --size_x $s_x --size_y $s_y --size_z $s_z --scoring "$sf" --cpu $cpu --exhaustiveness $ext --num_modes $num_modes --min_rmsd $min_rmsd --energy_range $energy_range --spacing $spacing --ligand "$l" --receptor $p --out "$RR/$nP/$nL/$nl/$nl.pdbqt" &
+        # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
+        echo "" >> "$rt"
+        echo "TARGET	$nP" >> "$rt"
+        echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rt"
 
-            ((account_ligands++))
-            ((crossings++))  
-            if ((account_ligands % $runs == 0)); then  # Check if "$runs" ligands have been processed
-                wait  # Wait for all background processes to finish          
-            fi
-        done
-        wait
-        for s in "$RR/$nP/$nL/"*/; do
-            b=$(basename "$s")
-            echo "////////////////////////////////////////////////////////////"
-            echo "/Running the Vina Split // Ligand: $b                       "
-            echo "////////////////////////////////////////////////////////////"
-#            if [ -f "$RR/$nP/$nL/$b/$b.pdbqt" ]; then
-            if [ -f "$s/$b.pdbqt" ]; then
-                # Decomposes each $nl.pdbqt output result into the pose files:           
-                $vina_split --input "$s/$b.pdbqt" # Running the vina split
+        ((target_account++)) # Adds 1 more to the target account
 
-                # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
-                energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
-                results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
-                e=$(echo "$energy_md1" | awk '{print $4}')
-                rmsd=$(echo "$results_rmsd" | awk '{print $5}')
+        # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
+        for L in "$ligands/"*/; do
+            nL=$(basename "$L")
+            total=$(ls -1 $L | wc -l)
+            # Start of time counter and ligands account for the ligand databank:
+            start_time_P=$(date +%s)
+            account_ligands=0
+
+            # Create a configuration file for each protein:
+            touch $RR/$nP/$nL/config.txt
+            config_file="$RR/$nP/$nL/config.txt"
+
+            # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+            echo "                                                                                        " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "/////////////////////////////FROM LIGAND DATABANK: $nL /////////////////////////////////" >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "                                                                                        " >> "$dp"
+
+            # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+            echo "" >> "$rp"
+            echo "LIGAND_DATABANK	$nL" >> "$rp"
+            echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rp"               
+
+            # 3rd FOR Loop executes docking on each .pdbqt ligand present in the subfolder:
+            for l in "$L"*.pdbqt; do
+                nl=$(basename "$l" .pdbqt)
+                mkdir -p "$RR/$nP/$nL/$nl"
+                # Create a config file for each proteins and ligand database:   
+                cat <<EOL > "$config_file"
+receptor = $p
+ligand = $l
+scoring = $sf
+center_x = $c_x
+center_y = $c_y
+center_z = $c_z
+size_x = $s_x
+size_y = $s_y
+size_z = $s_z	
+out = $RR/$nP/$nL/$nl/$nl.pdbqt
+cpu = $cpu
+exhaustiveness = $ext
+num_modes = $num_poses
+min_rmsd = $min_rmsd
+energy_range = $energy_range
+spacing = $spacing
+EOL
                 
-                # Calculating the average RMSD of extracted values:
-                    r=$(echo $rmsd | awk '{ 
-                        sum = 0; 
-                        for (i = 1; i <= NF; i++) { 
-                            sum += $i; 
-                        } 
-                        print sum / NF  
-                    }')
-                            
-                # Saves the ligand name, binding energy and rmsd to the result file:
-                echo "$b,$e,$r" >> "$rp"
-                echo "$b,$e,$r" >> "$rt"
-            fi
+                # YAD Progress Bar Update:
+                progress=$(( account_ligands * 100 / total ))
+                echo "$progress"
+                echo "# Docking Ligand $nl from Base $nL to Target $nP"
+
+                echo "////////////////////////////////////////////////////////////"
+                echo "/Running the docking ... // Ligand: $nl // Protein: $nP     "
+                echo "////////////////////////////////////////////////////////////"
+                # Running the docking calculation
+                $vina --config $config_file > /dev/null 1>&2
+                ((crossings+=1))
+                ((account_ligands+=1))
+            done 
+            for s in "$RR/$nP/$nL/"*/; do
+                b=$(basename "$s")
+                echo "////////////////////////////////////////////////////////////"
+                echo "/Running the Vina Split // Ligand: $b                      /"
+                echo "////////////////////////////////////////////////////////////"
+                    # Decomposes each $nl.pdbqt output result into the pose files:           
+                    $vina_split --input "$s"/"$b.pdbqt" # Running the vina split
+
+                    # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
+                    energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
+                    results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
+                    results_smiles=$(grep 'REMARK SMILES' "$s/$b.pdbqt" | head -n 1)                
+                    e=$(echo "$energy_md1" | awk '{print $4}')
+                    rmsd=$(echo "$results_rmsd" | awk '{print $5}')
+                    smi=$(echo "$results_smiles" | awk '{print $3}')
+                    
+                    # Calculating the average RMSD of extracted values:
+                        r=$(echo $rmsd | awk '{ 
+                            sum = 0; 
+                            for (i = 1; i <= NF; i++) { 
+                                sum += $i; 
+                            } 
+                            print sum / NF  
+                        }')                                
+                    # Saves the ligand name, binding energy and rmsd to the result file:
+                    echo "$smi	$b	$e	$r" >> "$rp"
+                    echo "$smi	$b	$e	$r" >> "$rt"
+            done
             cp "$p" "$RR/$nP/$nL/"
+            # Calculation of partial elapsed time and partial performance information for each binder group:
+            end_time_P=$(date +%s)
+            parcial_time=$((end_time_P - start_time_P))
+            days=$((parcial_time / 86400))
+            hours=$(( (parcial_time % 86400) / 3600 ))
+            minutes=$(( (parcial_time % 3600) / 60 ))
+            seconds=$((parcial_time % 60))
+
+            echo "                                                                                        " >> "$dp"
+            echo "              $account_ligands LIGANDS WERE PROCESSED                             	  " >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "	    Elapsed time: $parcial_time seconds												  " >> "$dp"
+            echo "		Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds     " >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"     
         done
-        # Calculation of partial elapsed time and partial performance information for each binder group:
-        end_time_P=$(date +%s)
-        parcial_time=$((end_time_P - start_time_P))
-        days=$((parcial_time / 86400))
-        hours=$(( (parcial_time % 86400) / 3600 ))
-        minutes=$(( (parcial_time % 3600) / 60 ))
-        seconds=$((parcial_time % 60))
-
-        echo "                                                                                          " >> "$dp"
-        echo "                      $account_ligands LIGANDS WERE PROCESSED                             " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                        Elapsed time: $parcial_time seconds                               " >> "$dp"
-        echo "      Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds       " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "------------------------------------------------------------------------------------------" >> "$dp"
     done
-done
 
-# Calculation of total elapsed time and total performance information for all ligands and proteins:
-end_time_total=$(date +%s)
-total_time=$((end_time_total - start_time_total))
-days=$((total_time / 86400))
-hours=$(( (total_time % 86400) / 3600 ))
-minutes=$(( (total_time % 3600) / 60 ))
-seconds=$((total_time % 60))
-all_ligands=$((crossings / target_account))
+    # Calculation of total elapsed time and total performance information for all ligands and proteins:
+    end_time_total=$(date +%s)
+    total_time=$((end_time_total - start_time_total))
+    days=$((total_time / 86400))
+    hours=$(( (total_time % 86400) / 3600 ))
+    minutes=$(( (total_time % 3600) / 60 ))
+    seconds=$((total_time % 60))
+    all_ligands=$((crossings / target_account))
 
-echo "##################################################################################################" >> "$dt"
-echo "#                                 CODOC VERSION 1.1.1:                                           #" >> "$dt"
-echo "#                         Developed by Moisés Maia Neto - 06/2024                                #" >> "$dt"
-echo "##################################################################################################" >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
-echo "                                     $all_ligands ligands                                         " >> "$dt"
-echo "                                     $crossings Crossings                                         " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
-echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt"
-dialog --title "ATTENTION" --msgbox "RIGID DOCKING IS OVER! CHECK THE RESULTADOS_RIGIDO_CPU_"$current_date" FOLDER" 10 60
-show_main_menu
+    echo "##################################################################################################" >> "$dt"
+    echo "#                                 CODOC VERSION 1.0 :                                            #" >> "$dt"
+    echo "#                         Developed by Moisés Maia Neto - 26/09/2024                             #" >> "$dt"
+    echo "##################################################################################################" >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
+    echo "                                     $all_ligands ligands                                         " >> "$dt"
+    echo "                                     $crossings Crossings                                         " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
+    echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt" 
+) | yad --progress --text="Docking progress ..." \
+                    --image=$CODOC_DIR/icons/rigidP.png \
+                    --auto-close --auto-kill \
+                    --title="CODOC - CPU Rigid Docking" --button="CANCEL":1 \
+                    --enable-log="Log:" --log-expanded --log-height=500 \
+                    --center --width=600 --borders=10
+    case $? in
+        1) # CANCEL BUTTON
+            break
+            show_ligand_menu
+            return
+            ;;
+    esac
+else
+    show_docking_menu
+fi
+    yad --info --center \
+        --title="CODOC - CONFIRMATION !" \
+        --text="RIGID DOCKING WITH CPU IS OVER! CHECK THE RESULTADOS_RIGIDO_GPU_$current_date FOLDER." \
+        --text-align=center \
+        --button="OK":0 --buttons-layout=center \
+        --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/okP.png
+
+show_docking_menu
 }
 
 #################################################################################################################################
 #                                       FUNCTION TO PERFORM RIGID DOCKING (WITH GPU):                                           #
 #################################################################################################################################
 run_rigid_docking_gpu() {
-dialog --title "ATTENTION" --msgbox "CHECK THE FILES IN THE TARGETS FOLDER: protein.pdbqt and grid.txt." 10 60  ;
+yad --info --center --title="CODOC - INFORMATION !" \
+    --text="CHECK THE FILES IN THE TARGETS FOLDER: protein.pdbqt and grid.txt." \
+    --text-align=center \
+    --button="CANCEL":1 --button="OK":0 --buttons-layout=edge \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/attentionP.png
 
-# Start of the total time counter, total ligands count and targets count:
-start_time_total=$(date +%s)
-target_account=0
-crossings=0
+if [ $? -eq 0 ]; then
+    # Start of the total time counter, total ligands count and targets count:
+    start_time_total=$(date +%s)
+    target_account=0
+    crossings=0
 
-# Updating docking parameters according to user choices:
-data="$CODOC_DIR/.form_data.txt"
-threads="$(sed -n '4p' $data)"
-num_modes="$(sed -n '5p' $data)"
-energy_range="$(sed -n '7p' $data)"
+    # Updating docking parameters according to user choices:
+    data1="$CODOC_DIR/.form_data1.txt"
+    threads="$(sed -n '4p' $data1)"
 
-# Creates the folder where all docking results and performance will be saved:
-mkdir "$CODOC_DIR"/RIGID_DOCKING_RESULT_GPU_"$current_date"
-RR="$CODOC_DIR/RIGID_DOCKING_RESULT_GPU_$current_date"
+    # Creates the folder where all docking results and performance will be saved:
+    mkdir "$CODOC_DIR"/RIGID_DOCKING_RESULT_GPU_"$current_date"
+    RR="$CODOC_DIR/RIGID_DOCKING_RESULT_GPU_$current_date"
 
-# Generates subfolders in the RIGID_DOCKING_RESULT_"$current_date" folder corresponding to the targets:
-rsync -av --include=*/ --exclude=* $targets/* $RR
+    # Generates subfolders in the RIGID_DOCKING_RESULT_"$current_date" folder corresponding to the targets:
+    rsync -av --include=*/ --exclude=* $targets/* $RR
 
-# Creates files where all docking results and total performance will be saved:
-rt=$RR/TOTAL_RESULT_RIGID_DOCKING_GPU_"$current_date".csv && touch "$rt"
-dt=$RR/TOTAL_PERFORMANCE_RIGID_DOCKING_GPU_"$current_date".txt && touch "$dt"
+    # Creates files where all docking results and total performance will be saved:
+    rt=$RR/TOTAL_RESULT_RIGID_DOCKING_GPU_"$current_date".csv && touch "$rt"
+    dt=$RR/TOTAL_PERFORMANCE_RIGID_DOCKING_GPU_"$current_date".txt && touch "$dt"
 
-# 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
-for P in "$targets/"*/; do
-    nP=$(basename "$P")
-    p="$targets/$nP/"protein.pdbqt
+    # 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
+    for P in "$targets"/*/; do
+        nP=$(basename "$P")
+        p="$targets/$nP/protein.pdbqt"
 
-    # Create subfolders for each group of ligands in the targets folder present in RESULTS:
-    rsync -av --include=*/ --exclude=* "$ligands"/* "$RR"/"$nP"
+        # Create subfolders for each group of ligands in the targets folder present in RESULTS:
+        rsync -av --include=*/ --exclude=* "$ligands"/* "$RR"/"$nP"
 
-    # Creates files where all partial docking results and performance for each target will be stargets:
-    rp=$RR/"$nP"/RIGID_DOCKING_RESULT_GPU_"$nP"_"$current_date".csv && touch "$rp"
-    dp=$RR/"$nP"/RIGID_DOCKING_PERFORMANCE_GPU_"$nP"_"$current_date".txt && touch "$dp"
+        # Creates files where all partial docking results and performance for each target will be stargets:
+        rp=$RR/"$nP"/RIGID_DOCKING_RESULT_GPU_"$nP"_"$current_date".csv && touch "$rp"
+        dp=$RR/"$nP"/RIGID_DOCKING_PERFORMANCE_GPU_"$nP"_"$current_date".txt && touch "$dp"
 
-    # Checks if the grid.txt file exists in the $targets/$nP folder
-    if [ -f "$targets/$nP/grid.txt" ]; then
-        # If the file exists, it updates the Grid Box parameters:
-        grid=/$targets/$nP/grid.txt
-        # Extract the line containing "center/size" and get the values:
-        center_line=$(grep 'center' "$grid")
-        c_x=$(echo "$center_line" | awk '{print $2}')
-        c_y=$(echo "$center_line" | awk '{print $3}')
-        c_z=$(echo "$center_line" | awk '{print $4}')
-        size_line=$(grep 'npts' "$grid")
-        s_x=$(echo "$size_line" | awk '{print $2}')
-        s_y=$(echo "$size_line" | awk '{print $3}')
-        s_z=$(echo "$size_line" | awk '{print $4}')
-    else
-        dialog --title "ATTENTION" --msgbox " The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT and save it in the $targets/$nP folder." 10 60  ;
+        # Checks if the grid.txt file exists in the $targets/$nP folder
         if [ -f "$targets/$nP/grid.txt" ]; then
             # If the file exists, it updates the Grid Box parameters:
             grid=/$targets/$nP/grid.txt
@@ -600,63 +2376,69 @@ for P in "$targets/"*/; do
             s_y=$(echo "$size_line" | awk '{print $3}')
             s_z=$(echo "$size_line" | awk '{print $4}')
         else
-            dialog --title "ATTENTION" --msgbox " The grid.txt file is STILL MISSING in the $targets/$nP folder. Correct and Restart the process" 10 60;
-            break
+            yad --info --center --title="CODOC - WARNING !" \
+                --text="The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT, save it in the $targets/$nP folder, and restart CODOC." \
+                --text-align=center \
+                --button="OK":0 --buttons-layout=center \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/warningP.png
+
+                show_docking_menu
         fi
-    fi
 
-    #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 CODOC VERSION 1.1.1:                                 #" >> "$dp"
-    echo "#                         Developed by Moisés Maia Neto - 06/2024                      #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-
-    # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
-    echo "" >> "$rp"
-    echo "TARGET","$nP" >> "$rp"
-
-    # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
-    echo "" >> "$rt"
-    echo "TARGET","$nP" >> "$rt"
-    echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rt"
-
-    ((target_account++)) # Adds 1 more to the target count
-
-    # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
-    for L in "$ligands/"*/; do
-        nL=$(basename "$L")
-
-        # Start of the split time counter for the ligand group:
-        parcial_time=0
-        start_time_P=$(date +%s)
-        account_ligands=0
-
-        # Create a configuration file for each protein:
-        touch $RR/$nP/$nL/config.txt
-        config_file="$RR/$nP/$nL/config.txt"
-        
-        # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+        #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 CODOC VERSION 1.0 :                                  #" >> "$dp"
+        echo "#                         Developed by Moisés Maia Neto - 26/09/2024                   #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
-        echo "/////////////////////////////FROM LIGAND DATABANK: $nL://///////////////////////////////" >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
+        echo "########################################################################################" >> "$dp"
+        echo "                                  FROM TARGET: $nP                                      " >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
 
-        # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+        # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
         echo "" >> "$rp"
-        echo "LIGAND DATABANK","$nL" >> "$rp"
-        echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rp"
+        echo "TARGET	$nP" >> "$rp"
 
-        # Create a config file for each proteins and ligand database:   
-        cat <<EOL > "$config_file"
+        # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
+        echo "" >> "$rt"
+        echo "TARGET	$nP" >> "$rt"
+        echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rt"
+
+        ((target_account++)) # Adds 1 more to the target count
+        
+        # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
+        for L in "$ligands"/*/; do
+            nL=$(basename "$L")
+            total=$(find "$L" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
+
+            # Start of the split time counter for the ligand group:
+            parcial_time=0
+            start_time_P=$(date +%s)
+            account_ligands=0
+
+            # Create a configuration file for each protein:
+            touch $RR/$nP/$nL/config.txt
+            config_file="$RR/$nP/$nL/config.txt"
+            
+            # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+            echo "                                                                                        " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "                             FROM LIGAND DATABANK: $nL:                                 " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "                                                                                        " >> "$dp"
+
+            # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+            echo "" >> "$rp"
+            echo "LIGAND_DATABANK	$nL" >> "$rp"
+            echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rp"
+
+            # Create a config file for each proteins and ligand database:   
+            cat <<EOL > "$config_file"
 receptor = $p
 ligand_directory = $L
-output_directory = $RR/$nP/$nL
+output_directory = $RR/$nP/$nL/
 opencl_binary_path = $opencl
 center_x = $c_x
 center_y = $c_y
@@ -666,40 +2448,61 @@ size_y = $s_y
 size_z = $s_z
 thread = $threads
 EOL
+            echo "////////////////////////////////////////////////////////////"
+            echo "/Running the docking calculation in ligands database: "$L"  "
+            echo "////////////////////////////////////////////////////////////"
 
-        echo "////////////////////////////////////////////////////////////"
-        echo "/Running the docking calculation in ligands database: "$L"  "
-        echo "////////////////////////////////////////////////////////////"
-        # Running the docking calculation
-        cd "$vina_GPU_dir"
-        $vina_GPU --config "$config_file"
-        cd "$CODOC_DIR"
-
-        # 3rd FOR Loop create a directory for each .pdbqt ligand present in the subfolder:
-        for out in "$RR/$nP"/*_out.pdbqt; do
-            l=$(echo "$out" | sed 's/_out//')
-            mv "$out" "$l"
-            nl=$(basename "$l" .pdbqt)
-            mkdir "$RR/$nP/$nL/$nl"
-            mv "$l" "$RR/$nP/$nL/$nl"
-            ((account_ligands++))
-            ((crossings++))            
-        done
-
-        echo "////////////////////////////////////////////////////////////"
-        echo "/Running the Vina Split // Ligand: $l                       "
-        echo "////////////////////////////////////////////////////////////"
-        for s in "$RR/$nP/$nL/"*/; do
-            b=$(basename "$s")
-            if [ -f "$s/$b".pdbqt ]; then
+            # Running the docking calculation
+            $vina_GPU --config "$config_file" &
+            vina_pid=$!
+            (
+            while kill -0 $vina_pid > /dev/null 1>&2; do
+                rest=$(ls "$RR/$nP/$nL/"* | wc -l)
+                progress=$(( rest * 100 / total ))
+                echo "$progress"
+                echo "# Docking Ligands from Base $nL to Target $nP"
+                sleep 1
+            done   
+            ) | yad --progress --text="Docking progress ..." \
+                    --image=$CODOC_DIR/icons/rigidP.png \
+                    --auto-close --auto-kill \
+                    --title="CODOC - GPU Rigid Docking" --button="CANCEL":1 \
+                    --enable-log="Log:" --log-expanded --log-height=500 \
+                    --center --width=600 --borders=10 &
+            case $? in
+                1) # CANCEL BUTTON
+                    break
+                    kill $vina_pid
+                    kill $YAD_PID
+                    show_ligand_menu
+                    return
+                    ;;
+            esac
+            wait $vina_pid
+            # 3rd FOR Loop create a directory for each .pdbqt ligand present in the subfolder and move _out.pdbqt file:
+            for out in "$RR/$nP/$nL/"*.pdbqt; do
+                [ -e "$out" ] || continue
+                nl=$(basename "$out" .pdbqt | sed "s/^$nL//;s/_out//")
+                mkdir "$RR/$nP/$nL/$nl"
+                mv "$out" "$RR/$nP/$nL/$nl/$nl.pdbqt"
+                ((account_ligands++))
+                ((crossings++))    
+            done
+            echo "////////////////////////////////////////////////////////////"
+            echo "/Running the Vina Split // Ligand: $l                       "
+            echo "////////////////////////////////////////////////////////////"
+            for s in "$RR/$nP/$nL/"*/; do
+                b=$(basename "$s")
                 # Decomposes each $nl.pdbqt output result into the pose files:           
                 $vina_split --input $s/$b.pdbqt # Running the vina split
 
                 # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
                 energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
                 results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
+                results_smiles=$(grep 'REMARK SMILES' "$s/$b.pdbqt" | head -n 1)                
                 e=$(echo "$energy_md1" | awk '{print $4}')
                 rmsd=$(echo "$results_rmsd" | awk '{print $5}')
+                smi=$(echo "$results_smiles" | awk '{print $3}')
                 
                 # Calculating the average RMSD of extracted values:
                     r=$(echo $rmsd | awk '{ 
@@ -711,118 +2514,119 @@ EOL
                     }')
                             
                 # Saves the ligand name, binding energy and rmsd to the result file:
-                echo "$b,$e,$r" >> "$rp"
-                echo "$b,$e,$r" >> "$rt"
-            fi
+                echo "$smi	$b	$e	$r" >> "$rp"
+                echo "$smi	$b	$e	$r" >> "$rt"
+            done
             cp "$p" "$RR/$nP/$nL/"
-        done
-        # Calculation of partial elapsed time and partial performance information for each binder group:
-        end_time_P=$(date +%s)
-        parcial_time=$((end_time_P - start_time_P))
-        days=$((parcial_time / 86400))
-        hours=$(( (parcial_time % 86400) / 3600 ))
-        minutes=$(( (parcial_time % 3600) / 60 ))
-        seconds=$((parcial_time % 60))
+            # Calculation of partial elapsed time and partial performance information for each binder group:
+            end_time_P=$(date +%s)
+            parcial_time=$((end_time_P - start_time_P))
+            days=$((parcial_time / 86400))
+            hours=$(( (parcial_time % 86400) / 3600 ))
+            minutes=$(( (parcial_time % 3600) / 60 ))
+            seconds=$((parcial_time % 60))
 
-        echo "                                                                                          " >> "$dp"
-        echo "                      $account_ligands LIGANDS WERE PROCESSED                             " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                        Elapsed time: $parcial_time seconds                               " >> "$dp"
-        echo "      Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds       " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "------------------------------------------------------------------------------------------" >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "              $account_ligands LIGANDS WERE PROCESSED                             	  " >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "	    Elapsed time: $parcial_time seconds												  " >> "$dp"
+            echo "		Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds     " >> "$dp"
+            echo "                                                                                        " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"         
+        done  
     done
-done
+    # Calculation of total elapsed time and total performance information for all ligands and proteins:
+    end_time_total=$(date +%s)
+    total_time=$((end_time_total - start_time_total))
+    days=$((total_time / 86400))
+    hours=$(( (total_time % 86400) / 3600 ))
+    minutes=$(( (total_time % 3600) / 60 ))
+    seconds=$((total_time % 60))
+    all_ligands=$((crossings / target_account))
 
-# Calculation of total elapsed time and total performance information for all ligands and proteins:
-end_time_total=$(date +%s)
-total_time=$((end_time_total - start_time_total))
-days=$((total_time / 86400))
-hours=$(( (total_time % 86400) / 3600 ))
-minutes=$(( (total_time % 3600) / 60 ))
-seconds=$((total_time % 60))
-all_ligands=$((crossings / target_account))
+    echo "##################################################################################################" >> "$dt"
+    echo "#                                 CODOC VERSION 1.0 :                                            #" >> "$dt"
+    echo "#                         Developed by Moisés Maia Neto - 26/09/2024                             #" >> "$dt"
+    echo "##################################################################################################" >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
+    echo "                                     $all_ligands ligands                                         " >> "$dt"
+    echo "                                     $crossings Crossings                                         " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "				TOTAL ELAPSED TIME: $total_time seconds												" >> "$dt"
+    echo "				$days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+ 
+else
+    show_docking_menu
+fi
 
-echo "##################################################################################################" >> "$dt"
-echo "#                                 CODOC VERSION 1.1.1:                                           #" >> "$dt"
-echo "#                         Developed by Moisés Maia Neto - 06/2024                                #" >> "$dt"
-echo "##################################################################################################" >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
-echo "                                     $all_ligands ligands                                         " >> "$dt"
-echo "                                     $crossings Crossings                                         " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
-echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt"
-dialog --title "ATTENTION" --msgbox "RIGID DOCKING IS OVER! CHECK THE RESULTADOS_RIGIDO_GPU_"$current_date" FOLDER" 10 60
-show_main_menu
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="RIGID DOCKING WITH GPU IS OVER! CHECK THE RESULTADOS_RIGIDO_GPU_$current_date FOLDER." \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_docking_menu
 }
 
 #################################################################################################################################
-#                                       FUNCTION TO PERFORM FLEXIBLE DOCKING (WITH CPU):                                           #
+#                                       FUNCTION TO PERFORM FLEXIBLE DOCKING (WITH CPU):                                        #
 #################################################################################################################################
 run_flexible_docking_cpu() {
-dialog --title "ATTENTION" --msgbox "CHECK THE FILES IN THE TARGETS FOLDER: protein_rigid.pdbqt, protein_flex.pdbqt e grid.txt." 10 60  ;
+yad --info --center --title="CODOC - INFORMATION !" \
+    --text="CHECK THE FILES IN THE TARGETS FOLDER: protein_rigid.pdbqt, protein_flex.pdbqt, and grid.txt." \
+    --text-align=center \
+    --button="CANCEL":1 --button="OK":0 --buttons-layout=edge \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/attentionP.png
 
-# Updating docking parameters according to user choices:
-data="$CODOC_DIR/.form_data.txt"
-sf="$(sed -n '1p' $data)"
-cpu="$(sed -n '2p' $data)"
-ext="$(sed -n '3p' $data)"
-num_modes="$(sed -n '5p' $data)"
-min_rmsd="$(sed -n '6p' $data)"
-energy_range="$(sed -n '7p' $data)"
-spacing="$(sed -n '8p' $data)"
-runs="$(sed -n '10p' $data)"
+if [ $? -eq 0 ]; then
 
-# Creates the folder where all docking results and performance will be saved:
-mkdir "$CODOC_DIR"/FLEXIBLE_DOCKING_RESULT_CPU_"$current_date"
-RF="$CODOC_DIR/FLEXIBLE_DOCKING_RESULT_CPU_$current_date"
+#    # Updating docking parameters according to user choices:
+#    data1="$CODOC_DIR/.form_data1.txt"
+#    sf="$(sed -n '1p' $data1)"
+#    cpu="$(sed -n '2p' $data1)"
+#    ext="$(sed -n '3p' $data1)"
+#    num_poses="$(sed -n '5p' $data1)"
+#    min_rmsd="$(sed -n '6p' $data1)"
+#    energy_range="$(sed -n '7p' $data1)"
+#    spacing="$(sed -n '8p' $data1)"
 
-# Generates subfolders in the RIGID_DOCKING_RESULT_"$current_date" folder corresponding to the targets:
-rsync -av --include=*/ --exclude=* $targets/* $RF
+    # Creates the folder where all docking results and performance will be saved:
+    mkdir "$CODOC_DIR"/FLEXIBLE_DOCKING_RESULT_CPU_"$current_date"
+    RF="$CODOC_DIR/FLEXIBLE_DOCKING_RESULT_CPU_$current_date"
 
-# Start of the total time counter, total ligands count and targets count:
-start_time_total=$(date +%s)
-target_account=0
-crossings=0
+    # Generates subfolders in the RIGID_DOCKING_RESULT_"$current_date" folder corresponding to the targets:
+    rsync -av --include=*/ --exclude=* $targets/* $RF
 
-# Creates files where all docking results and total performance will be saved:
-rt=$RF/TOTAL_RESULT_FLEXIBLE_DOCKING_CPU_"$current_date".csv && touch "$rt"
-dt=$RF/TOTAL_PERFORMANCE_FLEXIBLE_DOCKING_CPU_"$current_date".txt && touch "$dt"
+    # Start of the total time counter, total ligands count and targets count:
+    start_time_total=$(date +%s)
+    target_account=0
+    crossings=0
 
-# 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
-for P in "$targets/"*/; do
-    nP=$(basename "$P")
-    pR="$targets/$nP/protein_rigid.pdbqt"
-    pF="$targets/$nP/protein_flex.pdbqt"
+    # Creates files where all docking results and total performance will be saved:
+    rt=$RF/TOTAL_RESULT_FLEXIBLE_DOCKING_CPU_"$current_date".csv && touch "$rt"
+    dt=$RF/TOTAL_PERFORMANCE_FLEXIBLE_DOCKING_CPU_"$current_date".txt && touch "$dt"
 
-    # Create subfolders for each group of ligands in the targets folder present in RESULTS:
-    rsync -av --include=*/ --exclude=* "$ligands"/* "$RF"/"$nP"
+    # 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
+    for P in "$targets/"*/; do
+        nP=$(basename "$P")
+        pR="$targets/$nP/protein_rigid.pdbqt"
+        pF="$targets/$nP/protein_flex.pdbqt"
 
-    # Creates files where all partial docking results and performance for each target will be stargets:
-    rp=$RF/"$nP"/FLEXIBLE_DOCKING_RESULT_CPU_"$nP"_"$current_date".csv && touch "$rp"
-    dp=$RF/"$nP"/FLEXIBLE_DOCKING_PERFORMANCE_CPU_"$nP"_"$current_date".txt && touch "$dp"
-    
-    # Checks if the grid.txt file exists in the $targets/$nP folder
-    if [ -f "$targets/$nP/grid.txt" ]; then
-        # If the file exists, it updates the Grid Box parameters:
-        grid=/$targets/$nP/grid.txt
-        # Extract the line containing "center/size" and get the values:
-        center_line=$(grep 'center' "$grid")
-        c_x=$(echo "$center_line" | awk '{print $2}')
-        c_y=$(echo "$center_line" | awk '{print $3}')
-        c_z=$(echo "$center_line" | awk '{print $4}')
-        size_line=$(grep 'npts' "$grid")
-        s_x=$(echo "$size_line" | awk '{print $2}')
-        s_y=$(echo "$size_line" | awk '{print $3}')
-        s_z=$(echo "$size_line" | awk '{print $4}')
-    else
-        dialog --title "ATTENTION" --msgbox " The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT and save it in the $targets/$nP folder." 10 60  ;
+        # Create subfolders for each group of ligands in the targets folder present in RESULTS:
+        rsync -av --include=*/ --exclude=* "$ligands"/* "$RF"/"$nP"
+
+        # Creates files where all partial docking results and performance for each target will be stargets:
+        rp=$RF/"$nP"/FLEXIBLE_DOCKING_RESULT_CPU_"$nP"_"$current_date".csv && touch "$rp"
+        dp=$RF/"$nP"/FLEXIBLE_DOCKING_PERFORMANCE_CPU_"$nP"_"$current_date".txt && touch "$dp"
+        
+        # Checks if the grid.txt file exists in the $targets/$nP folder
         if [ -f "$targets/$nP/grid.txt" ]; then
             # If the file exists, it updates the Grid Box parameters:
             grid=/$targets/$nP/grid.txt
@@ -836,87 +2640,126 @@ for P in "$targets/"*/; do
             s_y=$(echo "$size_line" | awk '{print $3}')
             s_z=$(echo "$size_line" | awk '{print $4}')
         else
-            dialog --title "ATTENTION" --msgbox " The grid.txt file is STILL MISSING in the $targets/$nP folder. Correct and Restart the process" 10 60;
-            break
+            yad --info --center --title="CODOC - WARNING !" \
+                --text="The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT, save it in the $targets/$nP folder, and restart CODOC." \
+                --text-align=center \
+                --button="OK":0 --buttons-layout=center \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/warningP.png
+
+                show_docking_menu
         fi
-    fi
 
-    #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 CODOC VERSION 1.1.1:                                 #" >> "$dp"
-    echo "#                         Developed by Moisés Maia Neto - 06/2024                      #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-
-    # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
-    echo "" >> "$rp"
-    echo "TARGET","$nP" >> "$rp"
-
-
-    # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
-    echo "" >> "$rt"
-    echo "TARGET","$nP" >> "$rt"
-    echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rt"
-
-    ((target_account++)) # Adds 1 more to the target account
-
-    # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
-    for L in "$ligands/"*/; do
-        nL=$(basename "$L")
-
-        # Start of time counter and ligands account for the ligand databank:
-        start_time_P=$(date +%s)
-        account_ligands=0
-             
-        # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+        #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 CODOC VERSION 1.0 :                                  #" >> "$dp"
+        echo "#                         Developed by Moisés Maia Neto - 26/09/2024                   #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
-        echo "/////////////////////////////FROM LIGAND DATABANK: $nL://///////////////////////////////" >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
 
-        # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+        # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
         echo "" >> "$rp"
-        echo "LIGAND DATABANK","$nL" >> "$rp"
-        echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rp"
+        echo "TARGET	$nP" >> "$rp"
 
-        # 3rd FOR Loop executes docking on each .pdbqt ligand present in the subfolder:
-        for l in "$L"*.pdbqt; do
-            nl=$(basename "$l" .pdbqt)
-            echo "////////////////////////////////////////////////////////////"
-            echo "/Running the docking calculation // Ligand: $nl             "
-            echo "////////////////////////////////////////////////////////////"
-            mkdir "$RF/$nP/$nL/$nl"
-            
-            # Running the docking calculation
-            $vina --center_x $c_x --center_y $c_y --center_z $c_z --size_x $s_x --size_y $s_y --size_z $s_z --scoring "$sf" --cpu $cpu --exhaustiveness $ext --num_modes $num_modes --min_rmsd $min_rmsd --energy_range $energy_range --spacing $spacing --ligand "$l" --receptor $pR --flex $pF --out "$RF/$nP/$nL/$nl/$nl.pdbqt" &
 
-            ((account_ligands++))
-            ((crossings++))  
-            if ((account_ligands % $runs == 0)); then  # Check if "$runs" ligands have been processed
-                wait  # Wait for all background processes to finish          
-            fi
-        done
-        wait
-        for s in "$RF/$nP/$nL/"*/; do
-            b=$(basename "$s")
-            echo "////////////////////////////////////////////////////////////"
-            echo "/Running the Vina Split // Ligand: $b                       "
-            echo "////////////////////////////////////////////////////////////"
-#            if [ -f "$RR/$nP/$nL/$b/$b.pdbqt" ]; then
-            if [ -f "$s/$b.pdbqt" ]; then
+        # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
+        echo "" >> "$rt"
+        echo "TARGET	$nP" >> "$rt"
+        echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rt"
+
+        ((target_account++)) # Adds 1 more to the target account
+
+        # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
+        for L in "$ligands/"*/; do
+            nL=$(basename "$L")
+            total=$(ls -1 $L | wc -l)
+            # Start of time counter and ligands account for the ligand databank:
+            start_time_P=$(date +%s)
+            account_ligands=0
+
+            # Create a configuration file for each protein:
+            touch $RF/$nP/$nL/config.txt
+            config_file="$RF/$nP/$nL/config.txt"
+                 
+            # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+            echo "                                                                                        " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "/////////////////////////////FROM LIGAND DATABANK: $nL://///////////////////////////////" >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "                                                                                        " >> "$dp"
+
+            # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+            echo "" >> "$rp"
+            echo "LIGAND_DATABANK	$nL" >> "$rp"
+            echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rp"
+
+            # 3rd FOR Loop executes docking on each .pdbqt ligand present in the subfolder:
+            (
+            for l in "$L"*.pdbqt; do
+                nl=$(basename "$l" .pdbqt)
+                echo "////////////////////////////////////////////////////////////"
+                echo "/Running the docking calculation // Ligand: $nl             "
+                echo "////////////////////////////////////////////////////////////"
+                mkdir "$RF/$nP/$nL/$nl"
+
+                # Create a config file for each proteins and ligand database:   
+                cat <<EOL > "$config_file"
+receptor = $pR
+flex = $pF
+ligand = $l
+scoring = $sf
+center_x = $c_x
+center_y = $c_y
+center_z = $c_z
+size_x = $s_x
+size_y = $s_y
+size_z = $s_z
+out = $RF/$nP/$nL/$nl/$nl.pdbqt
+cpu = $cpu
+exhaustiveness = $ext
+num_modes = $num_poses
+min_rmsd = $min_rmsd
+energy_range = $energy_range
+spacing = $spacing
+EOL
+                # YAD Progress Bar Update:
+                progress=$(( account_ligands * 100 / total ))
+                echo "$progress"
+                echo "# Docking Ligand $nl from Base $nL to Target $nP"
+
+                echo "////////////////////////////////////////////////////////////"
+                echo "/Running the docking calculation // Ligand: $nl             "
+                echo "////////////////////////////////////////////////////////////"
+                # Running the docking calculation
+                $vina --config $config_file
+                ((account_ligands++))
+                ((crossings++))  
+            done
+            ) | yad --progress --text="Docking progress ..." \
+                    --image=$CODOC_DIR/icons/rigidP.png \
+                    --auto-close --auto-kill \
+                    --title="CODOC - CPU Flexible Docking" --button="CANCEL":1 \
+                    --enable-log="Log:" --log-expanded --log-height=500 \
+                    --center --width=600 --borders=10     
+            for s in "$RF/$nP/$nL/"*/; do
+                b=$(basename "$s")
+                echo "////////////////////////////////////////////////////////////"
+                echo "/Running the Vina Split // Ligand: $b                       "
+                echo "////////////////////////////////////////////////////////////"
                 # Decomposes each $nl.pdbqt output result into the pose files:           
                 $vina_split --input "$s/$b.pdbqt" # Running the vina split
 
                 # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
                 energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
                 results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
+                results_smiles=$(grep 'REMARK SMILES' "$s/$b.pdbqt" | head -n 1)                
                 e=$(echo "$energy_md1" | awk '{print $4}')
                 rmsd=$(echo "$results_rmsd" | awk '{print $5}')
+                smi=$(echo "$results_smiles" | awk '{print $3}')
                 
                 # Calculating the average RMSD of extracted values:
                     r=$(echo $rmsd | awk '{ 
@@ -928,115 +2771,115 @@ for P in "$targets/"*/; do
                     }')
                             
                 # Saves the ligand name, binding energy and rmsd to the result file:
-                echo "$b,$e,$r" >> "$rp"
-                echo "$b,$e,$r" >> "$rt"
-            fi
+                echo "$smi	$b	$e	$r" >> "$rp"
+                echo "$smi	$b	$e	$r" >> "$rt"
+            done
             cp "$pR" "$RF/$nP/$nL/"
             cp "$pF" "$RF/$nP/$nL/"
+            # Calculation of partial elapsed time and partial performance information for each binder group:
+            end_time_P=$(date +%s)
+            parcial_time=$((end_time_P - start_time_P))
+            days=$((parcial_time / 86400))
+            hours=$(( (parcial_time % 86400) / 3600 ))
+            minutes=$(( (parcial_time % 3600) / 60 ))
+            seconds=$((parcial_time % 60))
+
+            echo "                                                                                          " >> "$dp"
+            echo "                      $account_ligands LIGANDS WERE PROCESSED                             " >> "$dp"
+            echo "                                                                                          " >> "$dp"
+            echo "                                                                                          " >> "$dp"
+            echo "                        Elapsed time: $parcial_time seconds                               " >> "$dp"
+            echo "      Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds       " >> "$dp"
+            echo "                                                                                          " >> "$dp"
+            echo "------------------------------------------------------------------------------------------" >> "$dp"
         done
-        # Calculation of partial elapsed time and partial performance information for each binder group:
-        end_time_P=$(date +%s)
-        parcial_time=$((end_time_P - start_time_P))
-        days=$((parcial_time / 86400))
-        hours=$(( (parcial_time % 86400) / 3600 ))
-        minutes=$(( (parcial_time % 3600) / 60 ))
-        seconds=$((parcial_time % 60))
-
-        echo "                                                                                          " >> "$dp"
-        echo "                      $account_ligands LIGANDS WERE PROCESSED                             " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                        Elapsed time: $parcial_time seconds                               " >> "$dp"
-        echo "      Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds       " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "------------------------------------------------------------------------------------------" >> "$dp"
     done
-done
 
-# Calculation of total elapsed time and total performance information for all ligands and proteins:
-end_time_total=$(date +%s)
-total_time=$((end_time_total - start_time_total))
-days=$((total_time / 86400))
-hours=$(( (total_time % 86400) / 3600 ))
-minutes=$(( (total_time % 3600) / 60 ))
-seconds=$((total_time % 60))
-all_ligands=$((crossings / target_account))
+    # Calculation of total elapsed time and total performance information for all ligands and proteins:
+    end_time_total=$(date +%s)
+    total_time=$((end_time_total - start_time_total))
+    days=$((total_time / 86400))
+    hours=$(( (total_time % 86400) / 3600 ))
+    minutes=$(( (total_time % 3600) / 60 ))
+    seconds=$((total_time % 60))
+    all_ligands=$((crossings / target_account))
 
-echo "##################################################################################################" >> "$dt"
-echo "#                                 CODOC VERSION 1.1.1:                                           #" >> "$dt"
-echo "#                         Developed by Moisés Maia Neto - 06/2024                                #" >> "$dt"
-echo "##################################################################################################" >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
-echo "                                     $all_ligands ligands                                         " >> "$dt"
-echo "                                     $crossings Crossings                                         " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
-echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt"
-dialog --title "ATTENTION" --msgbox "FLEXIBLE DOCKING IS OVER! CHECK THE FLEXIBLE_DOCKING_RESULT_CPU_"$current_date" FOLDER" 10 60
-show_main_menu
-remove_parameters
+    echo "##################################################################################################" >> "$dt"
+    echo "#                                 CODOC VERSION 1.0 :                                            #" >> "$dt"
+    echo "#                         Developed by Moisés Maia Neto - 26/09/2024                             #" >> "$dt"
+    echo "##################################################################################################" >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
+    echo "                                     $all_ligands ligands                                         " >> "$dt"
+    echo "                                     $crossings Crossings                                         " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
+    echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt"
+else
+    show_docking_menu
+fi
+    yad --info --center \
+        --title="CODOC - CONFIRMATION !" \
+        --text="FLEXIBLE DOCKING IS OVER! CHECK THE FLEXIBLE_DOCKING_RESULT_GPU_${current_date} FOLDER." \
+        --text-align=center \
+        --button="OK":0 --buttons-layout=center \
+        --width=500 --borders=10 \
+        --image=$CODOC_DIR/icons/okP.png
+
+show_docking_menu
 }
 
 #################################################################################################################################
 #                                       FUNCTION TO PERFORM FLEXIBLE DOCKING (WITH GPU):                                        #
 #################################################################################################################################
 run_flexible_docking_gpu() {
-dialog --title "ATTENTION" --msgbox "CHECK THE FILES IN THE TARGETS FOLDER: protein_rigid.pdbqt, protein_flex.pdbqt e grid.txt." 10 60  ;
 
-# Start of the total time counter, total ligands count and targets count:
-start_time_total=$(date +%s)
-target_account=0
-crossings=0
+yad --info --center --title="CODOC - INFORMATION !" \
+    --text="CHECK THE FILES IN THE TARGETS FOLDER: protein_rigid.pdbqt, protein_flex.pdbqt, and grid.txt." \
+    --text-align=center \
+    --button="CANCEL":1 --button="OK":0 --buttons-layout=edge \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/attentionP.png
 
-# Updating docking parameters according to user choices:
-data="$CODOC_DIR/.form_data.txt"
-threads="$(sed -n '4p' $data)"
-num_modes="$(sed -n '5p' $data)"
-energy_range="$(sed -n '7p' $data)"
+if [ $? -eq 0 ]; then
 
-# Creates the folder where all docking results and performance will be saved:
-mkdir "$CODOC_DIR"/FLEXIBLE_DOCKING_RESULT_GPU_"$current_date"
-RF="$CODOC_DIR/FLEXIBLE_DOCKING_RESULT_GPU_$current_date"
+    # Start of the total time counter, total ligands count and targets count:
+    start_time_total=$(date +%s)
+    target_account=0
+    crossings=0
 
-# Generates subfolders in the FLEXIBLE_DOCKING_RESULT_GPU_"$current_date" folder corresponding to the targets:
-rsync -av --include=*/ --exclude=* $targets/* $RF
+    # Updating docking parameters according to user choices:
+    data1="$CODOC_DIR/.form_data1.txt"
+    threads="$(sed -n '4p' $data1)"
 
-# Creates files where all docking results and total performance will be saved:
-rt=$RF/TOTAL_RESULT_FLEXIBLE_DOCKING_GPU_"$current_date".csv && touch "$rt"
-dt=$RF/TOTAL_PERFORMANCE_FLEXIBLE_DOCKING_GPU_"$current_date".txt && touch "$dt"
+    # Creates the folder where all docking results and performance will be saved:
+    mkdir "$CODOC_DIR"/FLEXIBLE_DOCKING_RESULT_GPU_"$current_date"
+    RF="$CODOC_DIR/FLEXIBLE_DOCKING_RESULT_GPU_$current_date"
 
-# 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
-for P in "$targets/"*/; do
-    nP=$(basename "$P")
-    pR="$targets/$nP/protein_rigid.pdbqt"
-    pF="$targets/$nP/protein_flex.pdbqt"
+    # Generates subfolders in the FLEXIBLE_DOCKING_RESULT_GPU_"$current_date" folder corresponding to the targets:
+    rsync -av --include=*/ --exclude=* $targets/* $RF
 
-    # Create subfolders for each group of ligands in the targets folder present in RESULTS:
-    rsync -av --include=*/ --exclude=* "$ligands"/* "$RF"/"$nP"
+    # Creates files where all docking results and total performance will be saved:
+    rt=$RF/TOTAL_RESULT_FLEXIBLE_DOCKING_GPU_"$current_date".csv && touch "$rt"
+    dt=$RF/TOTAL_PERFORMANCE_FLEXIBLE_DOCKING_GPU_"$current_date".txt && touch "$dt"
 
-    # Creates files where all partial docking results and performance for each target will be stargets:
-    rp=$RF/"$nP"/FLEXIBLE_DOCKING_RESULT_GPU_"$nP"_"$current_date".csv && touch "$rp"
-    dp=$RF/"$nP"/FLEXIBLE_DOCKING_PERFORMANCE_GPU_"$nP"_"$current_date".txt && touch "$dp"
+    # 1st FOR Loop enters each protein folder present in the TARGETS folder, assigns the GridBox parameters, and copies the ligand group directories to the RIGID_DOCKING_RESULT_"$current_date" folder:
+    for P in "$targets/"*/; do
+        nP=$(basename "$P")
+        pR="$targets/$nP/protein_rigid.pdbqt"
+        pF="$targets/$nP/protein_flex.pdbqt"
 
-    # Checks if the grid.txt file exists in the $targets/$nP folder
-    if [ -f "$targets/$nP/grid.txt" ]; then
-        # If the file exists, it updates the Grid Box parameters:
-        grid=/$targets/$nP/grid.txt
-        # Extract the line containing "center/size" and get the values:
-        center_line=$(grep 'center' "$grid")
-        c_x=$(echo "$center_line" | awk '{print $2}')
-        c_y=$(echo "$center_line" | awk '{print $3}')
-        c_z=$(echo "$center_line" | awk '{print $4}')
-        size_line=$(grep 'npts' "$grid")
-        s_x=$(echo "$size_line" | awk '{print $2}')
-        s_y=$(echo "$size_line" | awk '{print $3}')
-        s_z=$(echo "$size_line" | awk '{print $4}')
-    else
-        dialog --title "ATTENTION" --msgbox " The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT and save it in the $targets/$nP folder." 10 60  ;
+        # Create subfolders for each group of ligands in the targets folder present in RESULTS:
+        rsync -av --include=*/ --exclude=* "$ligands"/* "$RF"/"$nP"
+
+        # Creates files where all partial docking results and performance for each target will be stargets:
+        rp=$RF/"$nP"/FLEXIBLE_DOCKING_RESULT_GPU_"$nP"_"$current_date".csv && touch "$rp"
+        dp=$RF/"$nP"/FLEXIBLE_DOCKING_PERFORMANCE_GPU_"$nP"_"$current_date".txt && touch "$dp"
+
+        # Checks if the grid.txt file exists in the $targets/$nP folder
         if [ -f "$targets/$nP/grid.txt" ]; then
             # If the file exists, it updates the Grid Box parameters:
             grid=/$targets/$nP/grid.txt
@@ -1050,64 +2893,69 @@ for P in "$targets/"*/; do
             s_y=$(echo "$size_line" | awk '{print $3}')
             s_z=$(echo "$size_line" | awk '{print $4}')
         else
-            dialog --title "ATTENTION" --msgbox " The grid.txt file is STILL MISSING in the $targets/$nP folder. Correct and Restart the process" 10 60;
-            break
+            yad --info --center --title="CODOC - WARNING !" \
+                --text="The grid.txt file was not found in the $targets/$nP folder. Generate the text file named as grid.txt in ADT, save it in the $targets/$nP folder, and restart CODOC." \
+                --text-align=center \
+                --button="OK":0 --buttons-layout=center \
+                --width=500 --borders=10 \
+                --image=$CODOC_DIR/icons/warningP.png
+
+                show_docking_menu
         fi
-    fi
 
-    #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 CODOC VERSION 1.1.1:                                 #" >> "$dp"
-    echo "#                         Developed by Moisés Maia Neto - 06/2024                      #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
-    echo "########################################################################################" >> "$dp"
-    echo "                                                                                        " >> "$dp"
-
-    # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
-    echo "" >> "$rp"
-    echo "TARGET","$nP" >> "$rp"
-
-    # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
-    echo "" >> "$rt"
-    echo "TARGET","$nP" >> "$rt"
-    echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rt"
-
-    ((target_account++)) # Adds 1 more to the target count
-
-    # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
-    for L in "$ligands/"*/; do
-        nL=$(basename "$L")
-
-        # Start of the split time counter for the ligand group:
-        parcial_time=0
-        start_time_P=$(date +%s)
-        account_ligands=0
-
-        # Create a configuration file for each protein:
-        touch $RF/$nP/$nL/config.txt
-        config_file="$RF/$nP/$nL/config.txt"
-        
-        # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+        #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 CODOC VERSION 1.0 :                                  #" >> "$dp"
+        echo "#                         Developed by Moisés Maia Neto - 26/09/2024                   #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
-        echo "/////////////////////////////FROM LIGAND DATABANK: $nL://///////////////////////////////" >> "$dp"
-        echo "----------------------------------------------------------------------------------------" >> "$dp"
+        echo "########################################################################################" >> "$dp"
+        echo "#                                 FROM TARGET: $nP                                     #" >> "$dp"
+        echo "########################################################################################" >> "$dp"
         echo "                                                                                        " >> "$dp"
 
-        # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+        # Generates the headers where the PARTIAL RESULTS will be recorded in each of the targets:
         echo "" >> "$rp"
-        echo "LIGAND DATABANK","$nL" >> "$rp"
-        echo "LIGAND,BINDING ENERGY(Kcal/mol), RMSD(mean)" >> "$rp"
+        echo "TARGET	$nP" >> "$rp"
 
-        # Create a config file for each proteins and ligand database:   
-        cat <<EOL > "$config_file"
+        # Generates the headers where the TOTAL RESULTS for each of the targets will be recorded:
+        echo "" >> "$rt"
+        echo "TARGET	$nP" >> "$rt"
+        echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rt"
+
+        ((target_account++)) # Adds 1 more to the target count
+
+        # 2nd FOR Loop goes through each subfolder, with the ligand database, within the LIGANTES folder:
+        for L in "$ligands/"*/; do
+            nL=$(basename "$L")
+
+            # Start of the split time counter for the ligand group:
+            parcial_time=0
+            start_time_P=$(date +%s)
+            account_ligands=0
+
+            # Create a configuration file for each protein:
+            touch $RF/$nP/$nL/config.txt
+            config_file="$RF/$nP/$nL/config.txt"
+            
+            # Generates the headers where the LIGAND GROUPS will be recorded in the performance file:       
+            echo "                                                                                        " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "                              FROM LIGAND DATABANK: $nL:                                " >> "$dp"
+            echo "----------------------------------------------------------------------------------------" >> "$dp"
+            echo "                                                                                        " >> "$dp"
+
+            # Generates the headers where the LIGAND GROUPS will be recorded in the partial results file:
+            echo "" >> "$rp"
+            echo "LIGAND_DATABANK	$nL" >> "$rp"
+            echo "SMILES	LIGAND	BINDING_ENERGY(Kcal/mol)	RMSD(mean)" >> "$rp"
+
+            # Create a config file for each proteins and ligand database:   
+            cat <<EOL > "$config_file"
 receptor = $pR
 flex = $pF
 ligand_directory = $L
-output_directory = $RF/$nP/$nL
+output_directory = $RF/$nP/$nL/
 opencl_binary_path = $opencl
 center_x = $c_x
 center_y = $c_y
@@ -1118,39 +2966,50 @@ size_z = $s_z
 thread = $threads
 EOL
 
-        echo "////////////////////////////////////////////////////////////"
-        echo "/Running the docking calculation in ligands database: "$L"  "
-        echo "////////////////////////////////////////////////////////////"
-        # Running the docking calculation
-        cd "$vina_GPU_dir"
-        $vina_GPU --config "$config_file"
-        cd "$CODOC_DIR"
-
-        # 3rd FOR Loop create a directory for each .pdbqt ligand present in the subfolder:
-        for out in "$RR/$nP"/*_out.pdbqt; do
-            l=$(echo "$out" | sed 's/_out//')
-            mv "$out" "$l"
-            nl=$(basename "$l" .pdbqt)
-            mkdir "$RF/$nP/$nL/$nl"
-            mv "$l" "$RF/$nP/$nL/$nl"
-            ((account_ligands++))
-            ((crossings++))            
-        done
-
-        echo "////////////////////////////////////////////////////////////"
-        echo "/Running the Vina Split // Ligand: $l                       "
-        echo "////////////////////////////////////////////////////////////"
-        for s in "$RF/$nP/$nL/"*/; do
-            b=$(basename "$s")
-            if [ -f "$s/$b".pdbqt ]; then
+            echo "////////////////////////////////////////////////////////////"
+            echo "/Running the docking calculation in ligands database: "$L"  "
+            echo "////////////////////////////////////////////////////////////"
+            # Running the docking calculation
+            $vina_GPU --config "$config_file" &
+            vina_pid=$!
+            (
+            while kill -0 $vina_pid > /dev/null 1>&2; do
+                rest=$(find "$RR/$nP/$nL/" -maxdepth 1 -type f | wc -l)
+                progress=$(( rest * 100 / total ))
+                echo "$progress"
+                echo "# Docking Ligands from Base $nL to Target $nP"
+                sleep 1
+            done   
+            ) | yad --progress --text="Docking progress ..." \
+                    --image=$CODOC_DIR/icons/rigidP.png \
+                    --auto-close --auto-kill \
+                    --title="CODOC - GPU Rigid Docking" --button="CANCEL":1 \
+                    --enable-log="Log:" --log-expanded --log-height=500 \
+                    --center --width=600 --borders=10 &
+            wait $vina_pid
+            # 3rd FOR Loop create a directory for each .pdbqt ligand present in the subfolder and move _out.pdbqt file:
+            for out in "$RF/$nP/$nL"/*.pdbqt; do
+                nl=$(basename "$out" .pdbqt | sed "s/^$nL//;s/_out//")
+                mkdir "$RF/$nP/$nL/$nl"
+                mv "$out" "$RF/$nP/$nL/$nl/$nl.pdbqt"
+                ((account_ligands++))
+                ((crossings++))            
+            done
+            echo "////////////////////////////////////////////////////////////"
+            echo "/Running the Vina Split // Ligand: $l                       "
+            echo "////////////////////////////////////////////////////////////"
+            for s in "$RF/$nP/$nL/"*/; do
+                b=$(basename "$s")
                 # Decomposes each $nl.pdbqt output result into the pose files:           
                 $vina_split --input $s/$b.pdbqt # Running the vina split
 
                 # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
                 energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
                 results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
+                results_smiles=$(grep 'REMARK SMILES' "$s/$b.pdbqt" | head -n 1)                
                 e=$(echo "$energy_md1" | awk '{print $4}')
                 rmsd=$(echo "$results_rmsd" | awk '{print $5}')
+                smi=$(echo "$results_smiles" | awk '{print $3}')
                 
                 # Calculating the average RMSD of extracted values:
                     r=$(echo $rmsd | awk '{ 
@@ -1162,70 +3021,118 @@ EOL
                     }')
                             
                 # Saves the ligand name, binding energy and rmsd to the result file:
-                echo "$b,$e,$r" >> "$rp"
-                echo "$b,$e,$r" >> "$rt"
-            fi
+                echo "$smi	$b	$e	$r" >> "$rp"
+                echo "$smi	$b	$e	$r" >> "$rt"
+            done
             cp "$pR" "$RF/$nP/$nL/"
             cp "$pF" "$RF/$nP/$nL/"
+            # Calculation of partial elapsed time and partial performance information for each binder group:
+            end_time_P=$(date +%s)
+            parcial_time=$((end_time_P - start_time_P))
+            days=$((parcial_time / 86400))
+            hours=$(( (parcial_time % 86400) / 3600 ))
+            minutes=$(( (parcial_time % 3600) / 60 ))
+            seconds=$((parcial_time % 60))
+
+            echo "                                                                                          " >> "$dp"
+            echo "                      $account_ligands LIGANDS WERE PROCESSED                             " >> "$dp"
+            echo "                                                                                          " >> "$dp"
+            echo "                                                                                          " >> "$dp"
+            echo "                        Elapsed time: $parcial_time seconds                               " >> "$dp"
+            echo "      Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds       " >> "$dp"
+            echo "                                                                                          " >> "$dp"
+            echo "------------------------------------------------------------------------------------------" >> "$dp"
         done
-        # Calculation of partial elapsed time and partial performance information for each binder group:
-        end_time_P=$(date +%s)
-        parcial_time=$((end_time_P - start_time_P))
-        days=$((parcial_time / 86400))
-        hours=$(( (parcial_time % 86400) / 3600 ))
-        minutes=$(( (parcial_time % 3600) / 60 ))
-        seconds=$((parcial_time % 60))
-
-        echo "                                                                                          " >> "$dp"
-        echo "                      $account_ligands LIGANDS WERE PROCESSED                             " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "                        Elapsed time: $parcial_time seconds                               " >> "$dp"
-        echo "      Elapsed time: $days days : $hours hours : $minutes minutes : $seconds seconds       " >> "$dp"
-        echo "                                                                                          " >> "$dp"
-        echo "------------------------------------------------------------------------------------------" >> "$dp"
     done
-done
 
-# Calculation of total elapsed time and total performance information for all ligands and proteins:
-end_time_total=$(date +%s)
-total_time=$((end_time_total - start_time_total))
-days=$((total_time / 86400))
-hours=$(( (total_time % 86400) / 3600 ))
-minutes=$(( (total_time % 3600) / 60 ))
-seconds=$((total_time % 60))
-all_ligands=$((crossings / target_account))
+    # Calculation of total elapsed time and total performance information for all ligands and proteins:
+    end_time_total=$(date +%s)
+    total_time=$((end_time_total - start_time_total))
+    days=$((total_time / 86400))
+    hours=$(( (total_time % 86400) / 3600 ))
+    minutes=$(( (total_time % 3600) / 60 ))
+    seconds=$((total_time % 60))
+    all_ligands=$((crossings / target_account))
 
-echo "##################################################################################################" >> "$dt"
-echo "#                                 CODOC VERSION 1.1.1:                                           #" >> "$dt"
-echo "#                         Developed by Moisés Maia Neto - 06/2024                                #" >> "$dt"
-echo "##################################################################################################" >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
-echo "                                     $all_ligands ligands                                         " >> "$dt"
-echo "                                     $crossings Crossings                                         " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
-echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
-echo "                                                                                                  " >> "$dt"
-echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt"
-dialog --title "ATTENTION" --msgbox "FLEXIBLE DOCKING IS OVER! CHECK THE FLEXIBLE_DOCKING_RESULT_GPU_"$current_date" FOLDER" 10 60
-show_main_menu
-remove_parameters
+    echo "##################################################################################################" >> "$dt"
+    echo "#                                 CODOC VERSION 1.0 :                                            #" >> "$dt"
+    echo "#                         Developed by Moisés Maia Neto - 26/09/2024                             #" >> "$dt"
+    echo "##################################################################################################" >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          PROCESSED: $target_account targets                                      " >> "$dt"
+    echo "                                     $all_ligands ligands                                         " >> "$dt"
+    echo "                                     $crossings Crossings                                         " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "                          TOTAL ELAPSED TIME: $total_time seconds                                 " >> "$dt"
+    echo "              $days days : $hours hours : $minutes minutes : $seconds seconds                     " >> "$dt"
+    echo "                                                                                                  " >> "$dt"
+    echo "°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°" >> "$dt"
+
+else
+    show_docking_menu
+fi
+
+yad --info --center \
+    --title="CODOC - CONFIRMATION !" \
+    --text="FLEXIBLE DOCKING WITH GPU IS OVER! CHECK THE RESULTADOS_RIGIDO_GPU_$current_date FOLDER." \
+    --text-align=center \
+    --button="OK":0 --buttons-layout=center \
+    --width=500 --borders=10 \
+    --image=$CODOC_DIR/icons/okP.png
+
+show_docking_menu
 }
 
 #################################################################################################################################
 #                                       FUNCTION FOR REMOVING PARAMETER FILES:                                                  #
 #################################################################################################################################
 
-#Função de acesso global para remoção de parâmetros:
+#Global access function for removing parameters:
 remove_parameters() {
-rm /$CODOC_DIR/.form_data.txt
-rm /$CODOC_DIR/.menu_escolha.txt
+if [ -f "$CODOC_DIR"/.form_data1.txt ];then
+    rm "$CODOC_DIR"/.form_data1.txt
+fi
+if [ -f "$CODOC_DIR"/.form_data2.txt ];then
+    rm "$CODOC_DIR"/.form_data2.txt
+fi
+if [ -f "$CODOC_DIR"/.form_data3.txt ];then
+    rm "$CODOC_DIR"/.form_data3.txt
+fi
+if [ -f "$CODOC_DIR"/.form_data4.txt ];then
+    rm "$CODOC_DIR"/.form_data4.txt
+fi
+if [ -f "$CODOC_DIR"/.form_data5.txt ];then
+    rm "$CODOC_DIR"/.form_data5.txt
+fi
+if [ -f "$CODOC_DIR"/.menu_escolha1.txt ];then
+    rm "$CODOC_DIR"/.menu_escolha1.txt
+fi
+if [ -f "$CODOC_DIR"/.menu_escolha2.txt ];then
+    rm "$CODOC_DIR"/.menu_escolha2.txt
+fi
+if [ -f "$CODOC_DIR"/.menu_escolha3.txt ];then
+    rm "$CODOC_DIR"/.menu_escolha3.txt
+fi
+if [ -f "$CODOC_DIR"/.install_data.txt ];then
+    rm "$CODOC_DIR"/.install_data.txt
+fi
 }
 
-show_main_menu
+#################################################################################################################################
+#                                                       START MAIN MENU:                                                        #
+#################################################################################################################################
+echo "COMPLETE INITIALIZATION!"
+
+# On first access, if the menu shortcut is missing, it directs you to the prerequisite installation:
+if [ ! -f "$MENU_FILE" ]; then
+    run_CODOC_prerequisites
+else
+    echo "Menu entry CHECK !"
+fi
+
+show_main_menu &
+MENU_PID=$!
 
 #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # PLEASE CITE:
