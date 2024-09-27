@@ -9,7 +9,7 @@ target and subfolders by ligand database.
 This tool was written in Shell/Bash and uses YAD to generate the graphical user interface (GUI).
 
 
-#                                      1. **INSTALLATION INSTRUCTIONS**:                                  #
+#                                      1. **INSTALLATION INSTRUCTIONS:**                                  #
 
 
 # **CODOC:**
@@ -72,7 +72,7 @@ IF YOUR MACHINE HAS A WINDOWS DUAL BOOT SYSTEM, WITH TPM 2.0, YOU MUST ENTER THE
 SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO ACCESS THE OPENCL PLATFORM!
 
 
-#                                   2. **USE AND DIRECTORY ORGANIZATION:**:                               #
+#                                   2. **USE AND DIRECTORY ORGANIZATION:**                               #
 
 
 Inside the folder where CODOC.sh there should be four folders: LIGANDS, TARGETS, RESULTS AND BIN.
