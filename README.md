@@ -77,7 +77,7 @@ SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO 
 
 Inside the folder where CODOC.sh there should be four folders: LIGANDS, TARGETS, RESULTS AND BIN.
 
-#**LIGANDS:**
+# **LIGANDS:**
 You must add multi-model files within the LIGANDS folder and single molecule files must be placed in subfolders containing an acronym that identifies the database (Ex.: ZINC_FDA, ZINC_NP, CHEMBL, COCONUT, ATLAS, CMNPD, IBIS... ). Each subfolder present within the LIGANDS directory must contain a single file format such as: .sdf, .smi, .mol2, .pdb or .pdbqt.
 In the "Prepare Ligands" option in the main menu, it will be possible to:
 - Define the main parameters for configuration;
@@ -92,7 +92,7 @@ In the "Prepare Ligands" option in the main menu, it will be possible to:
 The conversion can also be performed using Cogen3D, which uses rdkit and not OpenBabel.
 The Rigid macrocycles for Vina-GPU option converts the "dummy atoms" G0, G1, G2 and G3 that gave flexibility to the macrocycle, but are not recognized by Vina-GPU, into carbons.
 
-#**TARGETS:**
+# **TARGETS:**
 In the "Prepare Targets" option in the main menu, you will be able to:
 - Choose the file in .pdb format that will be converted to .pdbqt format;
 - Generate the grid.txt file with the Gridbox information for that target;
@@ -105,7 +105,7 @@ It is strongly recommended that adjustments be made to the protonation state of 
 
 ADT-MGLTools must be used to define the coordinates of the center of the box (passed to CODOC for construction of the grid.txt file) and ProPka 3.0 must be used to define the protonation state of the titratable residues and make adjustments to the ADT, if necessary.
 
-#**RESULTS:**
+# **RESULTS:**
 The results folder will have two subfolders: CONVERSION and DOCKING;
 In the CONVERSION folder we will have the following subfolders (within them the data will be organized by binder database):
 - CONVERSION_FAILURE (containing files that presented failures in their structures that would compromise docking);
@@ -124,7 +124,7 @@ Within the target folders, for example the 6TEK target, we will have:
 - RIGID_DOCKING_PERFORMANCE_GPU_6TEK_26_05_2024.txt: PERFORMANCE LOG FILE CONTAINING NUMBER OF BINDING BASE AND ELAPSED TIME;
 - RIGID_DOCKING_RESULT_GPU_6TEK_26_05_2024.csv: FILE CONTAINING THE LIST OF RESULTS BY BINDING BASE WITH BINDING ENERGY AND RMSD.
 
-#**BIN:**
+# **BIN:**
 In the bin folder there will be some executable binaries:
 vina_1.2.5_linux_x86_64.sh
 vina_split_1.2.5_linux_x86_64
