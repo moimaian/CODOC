@@ -1,6 +1,6 @@
 
 #                                            CODOC VERSION 2024.1.0:                                       #
-#                                                   26/09/2024                                             #
+                                                   26/09/2024                                             
 
 This is a tool to automate the multi-target virtual screening process using several open-source software. 
 CODOC allows the preparation of ligands (using Open Babel or RDkit) and targets (using ADRF/prepare_receptor.sh). 
@@ -21,8 +21,9 @@ https://github.com/moimaian/CODOC/archive/refs/heads/main.zip
 **2**
 Extract the file to a working folder, for example, "$HOME/CODOC":
 This is possible graphically in a file manager like Nemo
-- Create the folder $HOME/CODOC
-- Extract the contents of the CODOC-main.zip file to the $HOME/CODOC folder
+- Create the folder $HOME/CODOC;
+- Extract the contents of the CODOC-main.zip file to the $HOME/CODOC folder;
+
 Or using the command in the terminal:
 >$ sudo apt-get install
 >$ unzip CODOC-main.zip -d $HOME/Downloads && mkdir $HOME/CODOC && mv $HOME/Downloads/CODOC-main/* $HOME/CODOC
@@ -31,9 +32,10 @@ Or using the command in the terminal:
 Go to the working folder and give permissions for the CODOC.sh file to be executed as a program:
 This is possible graphically in a file manager like Nemo
 - Right-click on the program (CODOC.sh bash script)
-- In the menu select properties
-- In the opened window select permissions
-- Check the box to allow execution as a program.
+- In the menu select properties;
+- In the opened window select permissions;
+- Check the box to allow execution as a program;
+
 Or using the command in the terminal:
 >$ chmod +x $HOME/CODOC/CODOC.sh
 
