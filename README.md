@@ -1,7 +1,7 @@
-############################################################################################################
+
 #                                            CODOC VERSION 2024.1.0:                                       #
 #                                                   26/09/2024                                             #
-############################################################################################################
+
 This is a tool to automate the multi-target virtual screening process using several open-source software. 
 CODOC allows the preparation of ligands (using Open Babel or RDkit) and targets (using ADRF/prepare_receptor.sh). 
 It performs molecular docking calculations on a CPU (AutoDock Vina 1.2.5) or GPU (AutoDock Vina-GPU 2.1) basis. 
@@ -9,9 +9,9 @@ Dataframes in .csv format are generated with ligand information and pose results
 target and subfolders by ligand database. 
 This tool was written in Shell/Bash and uses YAD to generate the graphical user interface (GUI).
 
-###########################################################################################################
+
 #                                      1. **INSTALLATION INSTRUCTIONS**:                                  #
-###########################################################################################################
+
 
 # **CODOC:**
 **1**
@@ -70,9 +70,9 @@ IT WILL PROBABLY WORK WELL ON UBUNTU LINUX AND ITS FLAVORS, BUT I DO NOT GUARANT
 IF YOUR MACHINE HAS A WINDOWS DUAL BOOT SYSTEM, WITH TPM 2.0, YOU MUST ENTER THE BIOS AND DISABLE THIS
 SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO ACCESS THE OPENCL PLATFORM!
 
-###########################################################################################################
+
 #                                   2. **USE AND DIRECTORY ORGANIZATION:**:                               #
-###########################################################################################################
+
 
 Inside the folder where CODOC.sh there should be four folders: LIGANDS, TARGETS, RESULTS AND BIN.
 
