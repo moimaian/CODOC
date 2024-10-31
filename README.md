@@ -11,7 +11,6 @@ This tool was written in Shell/Bash and uses YAD to generate the graphical user 
 
 #                                      1. **INSTALLATION INSTRUCTIONS:**                                  #
 
-
 # **CODOC:**
 **1**
 Download the zipped file from:
@@ -20,9 +19,8 @@ https://github.com/moimaian/CODOC/archive/refs/heads/main.zip
 **2**
 Extract the file to a working folder, for example, "$HOME/CODOC":
 This is possible graphically in a file manager like Nemo
-- Create the folder $HOME/CODOC;
-- Extract the contents of the CODOC-main.zip file to the $HOME/CODOC folder;
-
+- Create the folder $HOME/CODOC
+- Extract the contents of the CODOC-main.zip file to the $HOME/CODOC folder
 Or using the command in the terminal:
 >$ sudo apt-get install
 >$ unzip CODOC-main.zip -d $HOME/Downloads && mkdir $HOME/CODOC && mv $HOME/Downloads/CODOC-main/* $HOME/CODOC
@@ -31,10 +29,9 @@ Or using the command in the terminal:
 Go to the working folder and give permissions for the CODOC.sh file to be executed as a program:
 This is possible graphically in a file manager like Nemo
 - Right-click on the program (CODOC.sh bash script)
-- In the menu select properties;
-- In the opened window select permissions;
-- Check the box to allow execution as a program;
-
+- In the menu select properties
+- In the opened window select permissions
+- Check the box to allow execution as a program.
 Or using the command in the terminal:
 >$ chmod +x $HOME/CODOC/CODOC.sh
 
@@ -51,9 +48,11 @@ When it does not find the shortcut, as in the first execution, it will direct yo
 The other times it will promptly execute the main menu.
 
 # **PREREQUISITES:**
+After installing the menu entry and shortcut, return to the menu and click on Terminal to follow the installation process of the other prerequisites in the terminal.
 All prerequisites must be installed and to facilitate this process there is an ALL button. However, if it is necessary to reinstall one or more, these can be selected in the checklist.
 The prerequisites are:
 - GNU-Parallel;
+- GNU-plot;
 - AutoDock Vina 1.2.5 and AutoDock Split 1.2.5;
 - AutoDockTools-MGLTools 1.5.7;
 - ADRF-1.0;
@@ -71,13 +70,13 @@ IT WILL PROBABLY WORK WELL ON UBUNTU LINUX AND ITS FLAVORS, BUT I DO NOT GUARANT
 IF YOUR MACHINE HAS A WINDOWS DUAL BOOT SYSTEM, WITH TPM 2.0, YOU MUST ENTER THE BIOS AND DISABLE THIS
 SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO ACCESS THE OPENCL PLATFORM!
 
-
-#                                   2. **USE AND DIRECTORY ORGANIZATION:**                               #
-
+################################################################################################################
+#                                     2. **USE AND DIRECTORY ORGANIZATION:**:                                  #
+################################################################################################################
 
 Inside the folder where CODOC.sh there should be four folders: LIGANDS, TARGETS, RESULTS AND BIN.
 
-# **LIGANDS:**
+**LIGANDS:**
 You must add multi-model files within the LIGANDS folder and single molecule files must be placed in subfolders containing an acronym that identifies the database (Ex.: ZINC_FDA, ZINC_NP, CHEMBL, COCONUT, ATLAS, CMNPD, IBIS... ). Each subfolder present within the LIGANDS directory must contain a single file format such as: .sdf, .smi, .mol2, .pdb or .pdbqt.
 In the "Prepare Ligands" option in the main menu, it will be possible to:
 - Define the main parameters for configuration;
@@ -92,7 +91,7 @@ In the "Prepare Ligands" option in the main menu, it will be possible to:
 The conversion can also be performed using Cogen3D, which uses rdkit and not OpenBabel.
 The Rigid macrocycles for Vina-GPU option converts the "dummy atoms" G0, G1, G2 and G3 that gave flexibility to the macrocycle, but are not recognized by Vina-GPU, into carbons.
 
-# **TARGETS:**
+**TARGETS:**
 In the "Prepare Targets" option in the main menu, you will be able to:
 - Choose the file in .pdb format that will be converted to .pdbqt format;
 - Generate the grid.txt file with the Gridbox information for that target;
@@ -105,31 +104,33 @@ It is strongly recommended that adjustments be made to the protonation state of 
 
 ADT-MGLTools must be used to define the coordinates of the center of the box (passed to CODOC for construction of the grid.txt file) and ProPka 3.0 must be used to define the protonation state of the titratable residues and make adjustments to the ADT, if necessary.
 
-# **RESULTS:**
+**RESULTS:**
 The results folder will have two subfolders: CONVERSION and DOCKING;
 In the CONVERSION folder we will have the following subfolders (within them the data will be organized by binder database):
 - CONVERSION_FAILURE (containing files that presented failures in their structures that would compromise docking);
 - EMPTY_LIGANDS (containing empty files that cannot be recovered);
 - DATAFRAMES (containing information such as smiles code, name and physicochemical parameters of the ligands);
+- NO DRUGGABILITY (containing ligand files that were removed from the ligands folder because they did not meet the druggability requirements);
 
 In the DOCKING folder we will have the subfolders containing each docking execution performed.
-The names of these subfolders are organized as: TYPE OF DOCKING / HARDWARE USED / DATE OF PERFORMANCE
-Ex.: RIGID_DOCKING_RESULT_GPU_26_05_2024
+The names of these subfolders are organized as: DATE OF PERFORMANCE_TYPE OF DOCKING_HARDWARE USED 
+Ex.: 2024_05_26_RIGID_DOCKING_RESULT_GPU
 Within these docking results folders we will have:
 - RESULT SUBPLAYERS FOR EACH TARGET;
-- TOTAL_PERFORMANCE_RIGID_DOCKING_GPU_26_05_2024.txt: PERFORMANCE FILE CONTAINING NUMBER OF TARGETS, NUMBER OF LIGANDS, CROSSINGS AND TIME ELAPSED; - TOTAL_RESULT_RIGID_DOCKING_GPU_26_05_2024.csv: FILE CONTAINING THE LIST OF RESULTS BY TARGET WITH BINDING ENERGY AND RMSD.
+- TOTAL_PERFORMANCE: 2024_05_26_RIGID_DOCKING_RESULT_GPU.txt: PERFORMANCE FILE CONTAINING NUMBER OF TARGETS, NUMBER OF LIGANDS, CROSSINGS AND TIME ELAPSED; 
+- TOTAL RESULT DATA: 2024_05_26_RIGID_DOCKING_RESULT_GPU.csv: FILE CONTAINING THE LIST OF RESULTS BY TARGET WITH BINDING ENERGY AND RMSD.
 
-Within the target folders, for example the 6TEK target, we will have:
+Within the target folders, for example the 4PM4_1 target, we will have:
 - RESULT SUBPAGES FOR EACH BINDING BASE;
-- RIGID_DOCKING_PERFORMANCE_GPU_6TEK_26_05_2024.txt: PERFORMANCE LOG FILE CONTAINING NUMBER OF BINDING BASE AND ELAPSED TIME;
-- RIGID_DOCKING_RESULT_GPU_6TEK_26_05_2024.csv: FILE CONTAINING THE LIST OF RESULTS BY BINDING BASE WITH BINDING ENERGY AND RMSD.
+- PARTIAL_PERFORMANCE: 2024_05_26_RIGID_DOCKING_RESULT_GPU_4PM4_1.txt: PERFORMANCE LOG FILE CONTAINING NUMBER OF BINDING BASE AND ELAPSED TIME FOR 4PM4_1 TARGET.;
+- PARTIAL RESULT DATA: 2024_05_26_RIGID_DOCKING_RESULT_GPU_4PM4_1.csv: FILE CONTAINING THE LIST OF RESULTS BY BINDING BASE WITH BINDING ENERGY AND RMSD FOR 4PM4_1 TARGET.
 
-# **BIN:**
+**BIN:**
 In the bin folder there will be some executable binaries:
 vina_1.2.5_linux_x86_64.sh
 vina_split_1.2.5_linux_x86_64
 CoGen3D.py
 
+
 ################################################################################################################
 Ready! Enjoy! I hope it is useful in your work!
-Moisés Maia - 26/09/2024
