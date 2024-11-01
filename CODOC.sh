@@ -1178,7 +1178,7 @@ show_docking_result() {
 gnuplot -persist <<-EOFMarker
     set title "Top Ligands for $selected_target"
     set xlabel " "
-    set ylabel "Binding Energy (Kcal/mol) \n RMSD (Angstrons)"
+    set ylabel "Binding Energy (Kcal/mol) \n RMSD (Angstroms)"
     set style data histograms
     set style fill solid 2.0 border -1
     set boxwidth 2
