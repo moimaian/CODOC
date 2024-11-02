@@ -1,7 +1,7 @@
 #!/bin/bash
 #################################################################################################################################
 #                                               CODOC VERSION 2024.1:                                                           #
-#                                                   26/10/2024                                                                  #
+#                                                   30/10/2024                                                                  #
 #################################################################################################################################
 
 #################################################################################################################################
@@ -797,7 +797,6 @@ form_data1=$(yad --form --center --title "Docking Settings" \
             s_x="$(sed -n '10p' $data1)"
             s_y="$(sed -n '11p' $data1)"
             s_z="$(sed -n '12p' $data1)"
-#            source .form_data1.txt
             export sf cpu cpu_parallel ext threads num_poses min_rmsd energy_range spacing s_x s_y s_z
             echo "Hidden file Form_data1.txt saved in $CODOC_DIR"
             show_main_menu
@@ -847,7 +846,6 @@ ligands_setting_form() {
             time_limit="$(sed -n '7p' $data2)"
             time_limit2="$(sed -n '8p' $data2)"
             steps="$(sed -n '9p' $data2)"
-#            source .form_data2.txt
             export file_size pH max_lig reject vel vel2 time_limit time_limit2 steps
             echo "Hidden file Form_data2.txt saved in $CODOC_DIR"
             show_ligand_menu
@@ -1405,8 +1403,10 @@ elif [ "$quantity_files" -gt 0 ]; then
                 mkdir "$ligands"/$LIG
                 mv $multi "$ligands"/$LIG
                 obabel "$ligands"/$LIG/*.pdbqt -O "$ligands"/"$LIG"/.pdbqt --split --unique cansmi
+                for file in $ligands/$LIG/*.pdbqt; do
+                    sed -i '1{/^MODEL/d};${/^ENDMDL/d}' "$file"
+                done
                 rm "$ligands"/"$LIG"/"$LIG".pdbqt
-
             else
                 if yad  --question --center --title="CODOC - QUESTION ?" \
                         --width=500 --height=200 \
@@ -1958,20 +1958,20 @@ show_ligand_menu
 #                                       LIGAND REJECTED FUNCTION FOR PDBQT:                                                     #
 #################################################################################################################################
 run_pdbqt_rejected() {
-    (
+    
     process_rejected() {
         local FILE="$1"
         local failure="$2"
         local nL="$3"
         local nl=$(basename "$FILE" .pdbqt)
 
-        # Count how many times 2 or 3 occurrences of 0.000 or -0.000 appear in ATOM lines in x, y, z columns:
+        # Count occurrences of 0.000 or -0.000 in ATOM lines in x, y, z columns:
         count_ZEROS=$(awk '/^ATOM/ {count=0; for (i=6; i<=8; i++) if ($i == "0.000" || $i == "-0.000") count++; if (count == 2 || count == 3) print}' "$FILE" | wc -l)
 
-        # Count how many occurrences of TORSDOF are in the file:
+        # Count occurrences of TORSDOF:
         count_TORSDOF=$(grep -c "^TORSDOF" "$FILE")
 
-        # Check for more than 3 consecutive atoms with the same coordinates:
+        # Check for repeated coordinates:
         repeated_coords=$(awk '
         BEGIN { x = ""; y = ""; z = ""; count = 0; }
         /^ATOM/ {
@@ -1995,20 +1995,21 @@ run_pdbqt_rejected() {
 
         if [[ $? -eq 1 ]]; then
             mv "$FILE" "$failure/$nl.pdbqt"
-            echo " - File: "$nl" with repeated atom coordinates has been moved to failure folder!"
+            echo "# - File: "$nl" with repeated atom coordinates has been moved to failure folder!"
         elif [[ $count_ZEROS -gt 1 ]]; then
             mv "$FILE" "$failure/$nl.pdbqt"
-            echo " - File: "$nl" with multiple 0.000 coordinates has been moved to failure folder!"
+            echo "# - File: "$nl" with multiple 0.000 coordinates has been moved to failure folder!"
         elif [[ $count_TORSDOF -gt 1 ]]; then
             mv "$FILE" "$failure/$nl.pdbqt"
-            echo " - File: "$nl" with error TORSDOF found!"
+            echo "# - File: "$nl" with error TORSDOF found!"
         elif grep -q -E "^ATOM.*\b($reject)\b" "$FILE"; then
             mv "$FILE" "$failure/$nl.pdbqt"
-            echo "- File: "$nl" with atoms not recognized by Vina-GPU has been moved to failure folder!"
+            echo "# - File: "$nl" with atoms not recognized by Vina-GPU has been moved to failure folder!"
         elif grep -q -E "ATOM.*[0-9]{6,}" "$FILE"; then
             mv "$FILE" "$failure/$nl.pdbqt"
-            echo " - File: "$nl" with error BIG NUMBER found!"
+            echo "# - File: "$nl" with error BIG NUMBER found!"
         fi
+        echo 1 >> "$failure"/."$nL"_count.txt
     }
 
     # Iterate over subdirectories in $ligands
@@ -2017,40 +2018,53 @@ run_pdbqt_rejected() {
         failure="$failure_dir/$nL"
         mkdir -p "$failure"  # Create the directory if it doesn't exist
         list="$failure"/."$nL"_rejected.txt
+        count_file="$failure"/."$nL"_count.txt
         touch "$list"
         echo -n > "$list"
+        echo -n > "$count_file"
         echo "Generating "$nL" rejected list ..."
 
-        # Iterate over .pdbqt files
+        # List .pdbqt files for progress tracking
         for FILE in "$L"*.pdbqt; do
             nl=$(basename "$FILE" .pdbqt)
             echo "$FILE" >> "$list"
         done     
-        echo " Evaluating "$nL":"
-        # Performing conversion with gnu parallel and OpenBabel:
+        (
+        # Calculate total files for progress tracking
+        total=$(wc -l < "$list")
+        temp_count_file=$(mktemp)
+        echo "# Total files to process: $total"
+        echo "# Evaluating "$nL":"
+
         export -f process_rejected
-        parallel -j "$cpu" process_rejected {} "$failure" "$nL" :::: "$list"
-        rm "$list"
+        parallel -j "$cpu" process_rejected {} "$failure" "$nL" :::: "$list" &
+        parallel_pid=$!
+        while kill -0 "$parallel_pid" 2>/dev/null; do
+            count=$(wc -l < "$count_file")
+            progress=$((count * 100 / total))
+            echo $progress  # Update progress
+            sleep 0.5
+        done
+        ) | yad --progress --text="Status:" \
+              --title="CODOC - REJECTED LIGANDS" \
+              --image="$CODOC_DIR/icons/progressP.png" \
+              --center --height=500 --width=800 --borders=10 --on-top \
+              --enable-log="Log:" --log-expanded --log-height=450 --auto-close \
+              --button="CANCEL CURRENT":1 & 
+        YAD_PID=$!
+        wait $parallel_pid
+        exit_status=$?        
+        if [ $exit_status -eq 1 ]; then
+            # "CANCEL CURRENT" button pressed
+            kill $parallel_pid
+            kill $YAD_PID
+        fi
     done
-    ) | yad --text-info --text="Status:" \
-          --title="CODOC - REJECTED LIGANDS" \
-          --image=$CODOC_DIR/icons/progressP.png \
-          --center --height=500 --width=800 --borders=10 --on-top \
-          --enable-log="Log:" --log-expanded --log-height=450 --auto-close \
-          --button="CANCEL CURRENT":1 &
-    YAD_PID=$!
-    wait $YAD_PID
-    exit_status=$?
-    if [ $exit_status -eq 1 ]; then
-        # CANCEL CURRENT button pressed
-        kill $parallel_pid
-        kill $YAD_PID
-    fi
 
     # YAD notification
     yad --info --center \
-        --title="CODOC - CONFIRMATION !" \
-        --text="THE LIGANDS REJECTION HAVE BEEN FINALIZED! CHECK IN THE FAILURE FOLDER!" \
+        --title="CODOC - CONFIRMATION!" \
+        --text="THE LIGANDS REJECTION HAS BEEN FINALIZED! CHECK IN THE FAILURE FOLDER!" \
         --text-align=center \
         --button="OK":0 --buttons-layout=center \
         --width=500 --borders=10 --on-top \
@@ -2058,6 +2072,7 @@ run_pdbqt_rejected() {
 
     show_ligand_menu
 }
+
 
 
 #################################################################################################################################
@@ -2108,53 +2123,58 @@ run_pdbqt_recovery() {
         # Restore successfully converted .pdbqt files
         for lig in "$failure"*.pdbqt; do
             FILE=$(basename $lig .pdbqt)
-            # Check if there is more than one line with "0.000 0.000"
-                # Counts how many 2 occurrences of 0.000 or -0.000 in the rows starting with ATOM and only in the columns of x, y and z coordinates:
-                count_ZEROS=$(awk '/^ATOM/ {count=0; for (i=6; i<=8; i++) if ($i == "0.000" || $i == "-0.000") count++; if (count == 2 || count == 3) print}' "$lig" | wc -l)
+            # Count occurrences of 0.000 or -0.000 in ATOM lines in x, y, z columns:
+            count_ZEROS=$(awk '/^ATOM/ {count=0; for (i=6; i<=8; i++) if ($i == "0.000" || $i == "-0.000") count++; if (count == 2 || count == 3) print}' "$FILE" | wc -l)
 
-                #Counts how many occurrences of TORSDOF in the file:
-                count_TORSDOF=$(grep -c "^TORSDOF" "$lig")
+            # Count occurrences of TORSDOF:
+            count_TORSDOF=$(grep -c "^TORSDOF" "$FILE")
 
-                # Check if more than 3 consecutive atoms have the same coordinates:
-                repeated_coords=$(awk '
-                BEGIN { x = ""; y = ""; z = ""; count = 0; }
-                /^ATOM/ {
-                    if ($6 == x && $7 == y && $8 == z) {
-                        count++;
-                    } else {
-                        count = 1;
-                    }
-                    x = $6; y = $7; z = $8;
+            # Check for repeated coordinates:
+            repeated_coords=$(awk '
+            BEGIN { x = ""; y = ""; z = ""; count = 0; }
+            /^ATOM/ {
+                matches = 0;
+                if ($6 == x) { matches++; }
+                if ($7 == y) { matches++; }
+                if ($8 == z) { matches++; }
 
-                    if (count > 2) {
-                        print "repetition"; exit 1;
-                    }
-                }' "$lig")
+                if (matches > 2) {
+                    count++;
+                } else {
+                    count = 1;
+                }
+                
+                x = $6; y = $7; z = $8;
 
-                if [[ $? -eq 1 ]]; then
-                    # Kept file to the failure folder
-                    echo "# File: $FILE in $nF with repeated coordinates was kept in the failure folder"
-                elif [[ $count_ZEROS -gt 1 ]]; then
-                    # Kept file to the failure folder
-                    echo "# File: $FILE in $nF with multiple coordinates 0.000 was kept in the failure folder"
-                elif [[ $count_TORSDOF -gt 1 ]]; then
-                    # Kept file to the failure folder
-                    echo "# File: $FILE in $nF with multiple TORSDOF was kept in the failure folder"
-                elif grep -q -E "^ATOM.*\b($reject)\b" "$lig"; then
-                    # Kept file to the failure folder
-                    echo "# File: "$FILE" with atoms not recognized by Vina-GPU was kept in the failure folder"
-                elif grep -q -E "ATOM.*[0-9]{20,}" "$lig"; then
-                    # Kept file to the failure folder
-                    echo "# File: "$FILE" with BIG NUMBER was kept in the failure folder"
-                else
-                    mkdir -p "$ligands/RECOVERED/$nL"
-                    mv "$lig" "$ligands/RECOVERED/$nL" && echo "# Moving $FILE to "$ligands/RECOVERED/$nL""
-                fi
+                if (count >= 2) {
+                    print "repetition"; exit 1;
+                }
+            }' "$FILE")
+
+            if [[ $? -eq 1 ]]; then
+                # Kept file to the failure folder
+                echo "# File: $FILE in $nF with repeated coordinates was kept in the failure folder"
+            elif [[ $count_ZEROS -gt 1 ]]; then
+                # Kept file to the failure folder
+                echo "# File: $FILE in $nF with multiple coordinates 0.000 was kept in the failure folder"
+            elif [[ $count_TORSDOF -gt 1 ]]; then
+                # Kept file to the failure folder
+                echo "# File: $FILE in $nF with multiple TORSDOF was kept in the failure folder"
+            elif grep -q -E "^ATOM.*\b($reject)\b" "$FILE"; then
+                # Kept file to the failure folder
+                echo "# File: "$FILE" with atoms not recognized by Vina-GPU was kept in the failure folder"
+            elif grep -q -E "ATOM.*[0-9]{6,}" "$FILE"; then
+                # Kept file to the failure folder
+                echo "# File: "$FILE" with BIG NUMBER was kept in the failure folder"
+            else
+                mkdir -p "$ligands/RECOVERED/$nL"
+                mv "$lig" "$ligands/RECOVERED/$nL" && echo "# Moving $FILE to "$ligands/RECOVERED/$nL""
+            fi
         done ) | yad --text-info --text="Recovering \"$nF\" files…" \
-          --image=$CODOC_DIR/icons/helpP.png \
-          --auto-close --center --width=400 --borders=10 --on-top \
-          --enable-log="Log:" --log-expanded --log-height=450 \
-          --no-buttons &
+                      --image=$CODOC_DIR/icons/helpP.png \
+                      --auto-close --center --width=400 --borders=10 --on-top \
+                      --enable-log="Log:" --log-expanded --log-height=450 \
+                      --no-buttons &
         YAD_PID2=$!
         wait $parallel_pid
         kill $YAD_PID2
@@ -2635,7 +2655,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			26/10/2024					                     #" >> "$dp"
+    echo "#                         			30/10/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -2904,7 +2924,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1 :                               #" >> "$dp"
-    echo "#                         			26/10/2024					                     #" >> "$dp"
+    echo "#                         			30/10/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3181,7 +3201,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			26/10/2024					                     #" >> "$dp"
+    echo "#                         			30/10/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3455,7 +3475,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			26/10/2024					                     #" >> "$dp"
+    echo "#                         			30/10/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3628,33 +3648,7 @@ show_docking_menu
 
 #Global access function for removing parameters:
 remove_parameters() {
-if [ -f "$CODOC_DIR"/.form_data1.txt ];then
-    rm "$CODOC_DIR"/.form_data1.txt
-fi
-if [ -f "$CODOC_DIR"/.form_data2.txt ];then
-    rm "$CODOC_DIR"/.form_data2.txt
-fi
-if [ -f "$CODOC_DIR"/.form_data3.txt ];then
-    rm "$CODOC_DIR"/.form_data3.txt
-fi
-if [ -f "$CODOC_DIR"/.form_data4.txt ];then
-    rm "$CODOC_DIR"/TARGETS/.form_data4.txt
-fi
-if [ -f "$CODOC_DIR"/.form_data5.txt ];then
-    rm "$CODOC_DIR"/.form_data5.txt
-fi
-if [ -f "$CODOC_DIR"/.menu_escolha1.txt ];then
-    rm "$CODOC_DIR"/.menu_escolha1.txt
-fi
-if [ -f "$CODOC_DIR"/.menu_escolha2.txt ];then
-    rm "$CODOC_DIR"/.menu_escolha2.txt
-fi
-if [ -f "$CODOC_DIR"/.menu_escolha3.txt ];then
-    rm "$CODOC_DIR"/.menu_escolha3.txt
-fi
-if [ -f "$CODOC_DIR"/.install_data.txt ];then
-    rm "$CODOC_DIR"/.install_data.txt
-fi
+find "$CODOC_DIR" -type f -name ".*" -exec rm -f {} +
 }
 
 #################################################################################################################################
