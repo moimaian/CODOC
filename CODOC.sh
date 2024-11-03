@@ -112,7 +112,7 @@ if [ -d "RESULTS" ]; then
 fi
 
 # Predefined global access address variables:
-tag=" C O D O C - A AUTOMATIZED MULTI-TARGET DOCKING TOOL"
+tag=" C O D O C - AN AUTOMATIZED MULTI-TARGET MOLECULAR DOCKING TOOL"
 CODOC_NAME="CODOC"
 CODOC_ICON="${CODOC_DIR}/icons/logo_codocP.png"
 CODOC_EXEC="${CODOC_DIR}/CODOC.sh"
@@ -271,7 +271,7 @@ run_CODOC_prerequisites() {
 
 # SAVE THE LINUX ROOT PASSWORD FOR FUTURE INSTALLATIONS:
 while true; do
-    password=$(yad --entry --text-align=center --text="Provide the linux root password:" \
+    password=$(yad --entry --title="CODOC - PASSWORD" --text-align=center --text="Provide the linux root password:" \
         --entry-label="Password:" --skip-taskbar --center --width=400 --borders=10 --on-top \
         --button="OK":0 --buttons-layout=edge --hide-text --on-top \
         --image="$CODOC_DIR/icons/cadeadoP.png" )
