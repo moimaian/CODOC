@@ -1941,7 +1941,7 @@ done
 
 # Removes all files with extensions other than .pdbqt, i.e. remaining files that were not converted or moved:
 find "$ligands" -type f ! -name "*.pdbqt" -exec rm {} +
-
+cd $CODOC_DIR
 yad --info --center \
     --title="CODOC - CONFIRMATION !" \
     --text="THE CONVERSION OF THE LIGANDS IS FINISHED! CHECK THE LIGANDS FOLDER" \
