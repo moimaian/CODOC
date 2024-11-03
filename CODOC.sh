@@ -2202,7 +2202,7 @@ run_empty() {
     # YAD information dialog
     yad --info --center --title="CODOC - REMOVE EMPTY FILE !" \
         --text="Removing ligands files with sizes smaller than $file_size bytes ! ... Please wait for completion !" \
-        --text-align=center --button="CANCEL":1 --buttons-layout=center --width=500 --borders=10 \
+        --text-align=center --button="CANCEL":1 --buttons-layout=center --width=500 --borders=10 --on-top \
         --image="$CODOC_DIR/icons/01P.png" &
     YAD_PID=$!
 
@@ -2232,7 +2232,7 @@ run_empty() {
         --title="CODOC - CONFIRMATION !" \
         --text="THE LIGANDS EMPTY HAVE BEEN MOVED! CHECK EMPTY_LIST IN THE \"$empty\" FOLDER!" \
         --text-align=center \
-        --button="OK":0 --buttons-layout=center \
+        --button="OK":0 --buttons-layout=center --on-top \
         --width=500 --borders=10 \
         --image="$CODOC_DIR/icons/okP.png"
 
@@ -2738,10 +2738,10 @@ EOL
             fi
         done < "$ligands/."$nL"_list.txt"
         )  | yad --progress --text="Docking progress ..." --center --on-top \
-        --image=$CODOC_DIR/icons/rigidP.png \
-        --auto-close\
-        --title="CODOC - CPU Rigid Docking" --button="NEXT BASE":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 \
-        --width=600 --borders=10 &
+                --image=$CODOC_DIR/icons/rigidP.png \
+                --auto-close\
+                --title="CODOC - CPU Rigid Docking" --button="NEXT BASE":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 \
+                --width=600 --borders=10 &
         YAD_PID=$!
         wait $YAD_PID
         exit_status=$?
@@ -3004,7 +3004,7 @@ EOL
             sleep 1
         done | yad --progress --text="Docking progress ..." \
                 --image=$CODOC_DIR/icons/rigidP.png \
-                --title="CODOC - GPU Rigid Docking" --button="CANCEL CURRENT":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 --buttons-layout=edge \
+                --title="CODOC - GPU Rigid Docking" --button="CANCEL CURRENT":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 --buttons-layout=edge --on-top \
                 --center --width=500 --borders=10 --auto-close &
                 YAD_PID=$!
                 wait $YAD_PID
@@ -3290,7 +3290,7 @@ EOL
         ) | yad --progress --text="Docking progress ..." \
                 --image=$CODOC_DIR/icons/rigidP.png \
                 --auto-close \
-                --title="CODOC - CPU Flexible Docking" --button="NEXT BASE":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 \
+                --title="CODOC - CPU Flexible Docking" --button="NEXT BASE":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 --on-top \
                 --center --width=600 --borders=10 &
                 YAD_PID=$!
                 wait $YAD_PID
@@ -3551,7 +3551,7 @@ EOL
             sleep 1
         done | yad --progress --text="Docking progress ..." \
                 --image=$CODOC_DIR/icons/rigidP.png \
-                --title="CODOC - GPU Rigid Docking" --button="CANCEL CURRENT":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 --buttons-layout=edge \
+                --title="CODOC - GPU Rigid Docking" --button="CANCEL CURRENT":1 --button="NEXT TARGET":2 --button="CANCEL ALL":3 --buttons-layout=edge --on-top \
                 --center --width=500 --borders=10 --auto-close &
                 YAD_PID=$!
                 wait $YAD_PID
