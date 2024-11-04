@@ -64,17 +64,17 @@ The prerequisites are:
 - Installation of Cogen3d prerequisites: Python3, pip, pandas, rdkit, dimorphite-dl, tqdm, meeko, xlsxwriter.
 
 
-THIS APPLICATION WAS DEVELOPED AND TESTED ONLY ON LINUX MINT 21.3 WITH KERNEL 5.15.0 AND CUDA-TOOLKIT 12.4. 
-IT WILL PROBABLY WORK WELL ON UBUNTU LINUX AND ITS FLAVORS, BUT I DO NOT GUARANTEE IT FOR OTHER LINUX DISTROS!
+THIS APPLICATION WAS DEVELOPED AND TESTED ON LINUX MINT 21.3 WITH KERNEL 5.15.0 (6.8 too) AND CUDA-TOOLKIT 12.4. 
+IT WILL PROBABLY WORK WELL ON UBUNTU LINUX AND ITS FLAVORS!
 
 IF YOUR MACHINE HAS A WINDOWS DUAL BOOT SYSTEM, WITH TPM 2.0, YOU MUST ENTER THE BIOS AND DISABLE THIS
 SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO ACCESS THE OPENCL PLATFORM!
 
 ################################################################################################################
-#                                     2. **USE AND DIRECTORY ORGANIZATION:**:                                  #
+#                                     2. **USE AND DIRECTORY ORGANIZATION:**                                   #
 ################################################################################################################
 
-Inside the folder where CODOC.sh there should be four folders: LIGANDS, TARGETS, RESULTS AND BIN.
+Inside the folder where CODOC.sh is located there should be four folders: LIGANDS, TARGETS, RESULTS, in addition to the original folders, bin, icons and test.
 
 **LIGANDS:**
 You must add multi-model files within the LIGANDS folder and single molecule files must be placed in subfolders containing an acronym that identifies the database (Ex.: ZINC_FDA, ZINC_NP, CHEMBL, COCONUT, ATLAS, CMNPD, IBIS... ). Each subfolder present within the LIGANDS directory must contain a single file format such as: .sdf, .smi, .mol2, .pdb or .pdbqt.
@@ -122,15 +122,25 @@ Within these docking results folders we will have:
 
 Within the target folders, for example the 4PM4_1 target, we will have:
 - RESULT SUBPAGES FOR EACH BINDING BASE;
-- PARTIAL_PERFORMANCE: 2024_05_26_RIGID_DOCKING_RESULT_GPU_4PM4_1.txt: PERFORMANCE LOG FILE CONTAINING NUMBER OF BINDING BASE AND ELAPSED TIME FOR 4PM4_1 TARGET.;
-- PARTIAL RESULT DATA: 2024_05_26_RIGID_DOCKING_RESULT_GPU_4PM4_1.csv: FILE CONTAINING THE LIST OF RESULTS BY BINDING BASE WITH BINDING ENERGY AND RMSD FOR 4PM4_1 TARGET.
+- PERFORMANCE: 2024_05_26_RIGID_DOCKING_RESULT_GPU_4PM4_1.txt: PERFORMANCE LOG FILE CONTAINING NUMBER OF BINDING BASE AND ELAPSED TIME FOR 4PM4_1 TARGET.;
+- RESULT DATA: 2024_05_26_RIGID_DOCKING_RESULT_GPU_4PM4_1.csv: FILE CONTAINING THE LIST OF RESULTS BY BINDING BASE WITH BINDING ENERGY AND RMSD FOR 4PM4_1 TARGET.
 
-**BIN:**
+**bin:**
 In the bin folder there will be some executable binaries:
 vina_1.2.5_linux_x86_64.sh
 vina_split_1.2.5_linux_x86_64
 CoGen3D.py
 
+**test:**
+In this folder you can find:
+- A LIGANDS folder containing multi-model ligand files in different formats. They should be transferred to the LIGANDS folder where CODOC.sh is located and then split into subfolders containing the individual structure files (this is done in ligands prepare);
+- A TARGETS folder for performing rigid docking. It contains two targets subfolders containing grid.txt and protein.pdbqt. They should be transferred to the TARGETS folder where CODOC.sh is located;
+- A TARGETS_FLEX folder for performing flexible docking. It contains two subfolders (PROTEIN_A and PROTEIN_B) containing grid.txt, protein_rigid.pdbqt and protein_flex.pdbqt;
+
+**icon:**
+In this folder are the icons that will be used by different CODOC windows.
+
+More usage information can be found in the provided user_manual.pdf.
 
 ################################################################################################################
 Ready! Enjoy! I hope it is useful in your work!
