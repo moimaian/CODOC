@@ -134,7 +134,7 @@ CoGen3D.py
 In this folder you can find:
 - A LIGANDS folder containing multi-model ligand files in different formats. They should be transferred to the LIGANDS folder where CODOC.sh is located and then split into subfolders containing the individual structure files (this is done in ligands prepare);
 - A TARGETS folder for performing rigid docking. It contains two targets subfolders containing grid.txt and protein.pdbqt. They should be transferred to the TARGETS folder where CODOC.sh is located;
-- A TARGETS_FLEX folder for performing flexible docking. It contains two subfolders (PROTEIN_A and PROTEIN_B) containing grid.txt, protein_rigid.pdbqt and protein_flex.pdbqt;
+- A TARGETS_FLEX folder for performing flexible docking. It contains two subfolders (PROTEIN_A and PROTEIN_B) containing grid.txt, protein_rigid.pdbqt and protein_flex.pdbqt. They should be transferred to the TARGETS folder where CODOC.sh is located;
 
 **icon:**
 In this folder are the icons that will be used by different CODOC windows.
