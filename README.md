@@ -70,9 +70,8 @@ IT WILL PROBABLY WORK WELL ON UBUNTU LINUX AND ITS FLAVORS!
 IF YOUR MACHINE HAS A WINDOWS DUAL BOOT SYSTEM, WITH TPM 2.0, YOU MUST ENTER THE BIOS AND DISABLE THIS
 SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO ACCESS THE OPENCL PLATFORM!
 
-################################################################################################################
-#                                     2. **USE AND DIRECTORY ORGANIZATION:**                                   #
-################################################################################################################
+
+#                                      2. **USE AND DIRECTORY ORGANIZATION:**                                  #
 
 Inside the folder where CODOC.sh is located there should be four folders: LIGANDS, TARGETS, RESULTS, in addition to the original folders, bin, icons and test.
 
@@ -140,7 +139,7 @@ In this folder you can find:
 **icon:**
 In this folder are the icons that will be used by different CODOC windows.
 
-More usage information can be found in the provided user_manual.pdf.
+ATTENTION! For further information on use, please consult the user_manual.pdf provided.
 
 ################################################################################################################
 Ready! Enjoy! I hope it is useful in your work!
