@@ -141,5 +141,5 @@ In this folder are the icons that will be used by different CODOC windows.
 
 ATTENTION! For further information on use, please consult the user_manual.pdf provided.
 
-################################################################################################################
+##########################################################################################################
 Ready! Enjoy! I hope it is useful in your work!
