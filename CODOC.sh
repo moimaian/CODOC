@@ -1,7 +1,7 @@
 #!/bin/bash
 #################################################################################################################################
 #                                               CODOC VERSION 2024.1:                                                           #
-#                                                   30/10/2024                                                                  #
+#                                                   07/11/2024                                                                  #
 #################################################################################################################################
 
 #################################################################################################################################
@@ -759,6 +759,7 @@ docking_setting_form() {
 form_data1=$(yad --form --center --title "Docking Settings" \
     --text "    Change the fields below if necessary:" \
     --field="   Scoring function :":CBE "vina!ad4!vinardo" \
+    --field="   split results :":CBE "no!yes" \
     --field="   CPU Threads :":NUM "$cpu" \
     --field="   CPU parallelism :":NUM "$cpu_parallel" \
     --field="   Exhaustiveness :":NUM "$ext" \
@@ -786,18 +787,19 @@ form_data1=$(yad --form --center --title "Docking Settings" \
             sed -i 's/,/./g' .form_data1.txt
             data1="$CODOC_DIR"/.form_data1.txt
             sf="$(sed -n '1p' $data1)"
-            cpu="$(sed -n '2p' $data1)"
-            cpu_parallel="$(sed -n '3p' $data1)"
-            ext="$(sed -n '4p' $data1)"
-            threads="$(sed -n '5p' $data1)"
-            num_poses="$(sed -n '6p' $data1)"
-            min_rmsd="$(sed -n '7p' $data1)"
-            energy_range="$(sed -n '8p' $data1)"
-            spacing="$(sed -n '9p' $data1)"
-            s_x="$(sed -n '10p' $data1)"
-            s_y="$(sed -n '11p' $data1)"
-            s_z="$(sed -n '12p' $data1)"
-            export sf cpu cpu_parallel ext threads num_poses min_rmsd energy_range spacing s_x s_y s_z
+            split="$(sed -n '2p' $data1)"
+            cpu="$(sed -n '3p' $data1)"
+            cpu_parallel="$(sed -n '4p' $data1)"
+            ext="$(sed -n '5p' $data1)"
+            threads="$(sed -n '6p' $data1)"
+            num_poses="$(sed -n '7p' $data1)"
+            min_rmsd="$(sed -n '8p' $data1)"
+            energy_range="$(sed -n '9p' $data1)"
+            spacing="$(sed -n '10p' $data1)"
+            s_x="$(sed -n '11p' $data1)"
+            s_y="$(sed -n '12p' $data1)"
+            s_z="$(sed -n '13p' $data1)"
+            export sf split cpu cpu_parallel ext threads num_poses min_rmsd energy_range spacing s_x s_y s_z
             echo "Hidden file Form_data1.txt saved in $CODOC_DIR"
             show_main_menu
             ;;
@@ -2022,14 +2024,15 @@ run_pdbqt_rejected() {
         touch "$list"
         echo -n > "$list"
         echo -n > "$count_file"
-        echo "Generating "$nL" rejected list ..."
+        (
+        echo "# Generating "$nL" rejected list ..."
 
         # List .pdbqt files for progress tracking
         for FILE in "$L"*.pdbqt; do
             nl=$(basename "$FILE" .pdbqt)
             echo "$FILE" >> "$list"
         done     
-        (
+
         # Calculate total files for progress tracking
         total=$(wc -l < "$list")
         temp_count_file=$(mktemp)
@@ -2045,20 +2048,22 @@ run_pdbqt_rejected() {
             echo $progress  # Update progress
             sleep 0.5
         done
-        ) | yad --progress --text="Status:" \
+        ) | yad --progress --text="Progress:" \
               --title="CODOC - REJECTED LIGANDS" \
               --image="$CODOC_DIR/icons/progressP.png" \
               --center --height=500 --width=800 --borders=10 --on-top \
-              --enable-log="Log:" --log-expanded --log-height=450 --auto-close \
+              --enable-log="Status:" --log-expanded --log-height=450 --auto-close \
               --button="CANCEL CURRENT":1 & 
         YAD_PID=$!
-        wait $parallel_pid
+        wait
         exit_status=$?        
         if [ $exit_status -eq 1 ]; then
             # "CANCEL CURRENT" button pressed
             kill $parallel_pid
             kill $YAD_PID
         fi
+        rm "$list" 
+        rm "$count_file"
     done
 
     # YAD notification
@@ -2655,7 +2660,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			30/10/2024					                     #" >> "$dp"
+    echo "#                         			07/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -2770,27 +2775,29 @@ EOL
             echo "////////////////////////////////////////////////////////////"
             echo "/Running the Vina Split // Ligand: $b                      /"
             echo "////////////////////////////////////////////////////////////"
+            if [ "$split" = "yes" ]; then
                 # Decomposes each $nl.pdbqt output result into the pose files:           
-                $vina_split --input "$s"/"$b.pdbqt" 2>&1 # Running the vina split
+                $vina_split --input $s/$b.pdbqt # Running the vina split
+            fi
 
-                # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
-                energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
-                results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
-                results_smiles=$(grep 'REMARK SMILES' "$s/$b.pdbqt" | head -n 1)                
-                e=$(echo "$energy_md1" | awk '{print $4}')
-                rmsd=$(echo "$results_rmsd" | awk '{print $5}')
-                smi=$(echo "$results_smiles" | awk '{print $3}')
-                
-                # Calculating the average RMSD of extracted values:
-                    r=$(echo $rmsd | awk '{ 
-                        sum = 0; 
-                        for (i = 1; i <= NF; i++) { 
-                            sum += $i; 
-                        } 
-                        print sum / NF  
-                    }')                                
-                # Saves the ligand name, binding energy and rmsd to the result file:
-                echo "$smi	$b	$e	$r" >> "$rp"
+            # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
+            energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
+            results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
+            results_smiles=$(grep 'REMARK SMILES' "$s/$b.pdbqt" | head -n 1)                
+            e=$(echo "$energy_md1" | awk '{print $4}')
+            rmsd=$(echo "$results_rmsd" | awk '{print $5}')
+            smi=$(echo "$results_smiles" | awk '{print $3}')
+            
+            # Calculating the average RMSD of extracted values:
+                r=$(echo $rmsd | awk '{ 
+                    sum = 0; 
+                    for (i = 1; i <= NF; i++) { 
+                        sum += $i; 
+                    } 
+                    print sum / NF  
+                }')                                
+            # Saves the ligand name, binding energy and rmsd to the result file:
+            echo "$smi	$b	$e	$r" >> "$rp"
         done
         cp "$p" "$RR/$nP/$nL/"
         kill $SPLIT_PID
@@ -2924,7 +2931,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1 :                               #" >> "$dp"
-    echo "#                         			30/10/2024					                     #" >> "$dp"
+    echo "#                         			07/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3047,9 +3054,10 @@ EOL
         echo "////////////////////////////////////////////////////////////"
         for s in "$RR/$nP/$nL/"*/; do
             b=$(basename "$s")
-            # Decomposes each $nl.pdbqt output result into the pose files:           
-            $vina_split --input $s/$b.pdbqt # Running the vina split
-
+            if [ "$split" = "yes" ]; then
+                # Decomposes each $nl.pdbqt output result into the pose files:           
+                $vina_split --input $s/$b.pdbqt # Running the vina split
+            fi
             # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
             energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
             results_rmsd=$(grep 'REMARK VINA RESULT:' "$s/$b.pdbqt")
@@ -3201,7 +3209,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			30/10/2024					                     #" >> "$dp"
+    echo "#                         			07/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3319,8 +3327,10 @@ EOL
             echo "////////////////////////////////////////////////////////////"
             echo "/Running the Vina Split // Ligand: $b                       "
             echo "////////////////////////////////////////////////////////////"
-            # Decomposes each $nl.pdbqt output result into the pose files:           
-            $vina_split --input "$s/$b.pdbqt" # Running the vina split
+            if [ "$split" = "yes" ]; then
+                # Decomposes each $nl.pdbqt output result into the pose files:           
+                $vina_split --input $s/$b.pdbqt # Running the vina split
+            fi
 
             # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
             energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
@@ -3475,7 +3485,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			30/10/2024					                     #" >> "$dp"
+    echo "#                         			07/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3587,8 +3597,10 @@ EOL
         echo "////////////////////////////////////////////////////////////"
         for s in "$RF/$nP/$nL/"*/; do
             b=$(basename "$s")
-            # Decomposes each $nl.pdbqt output result into the pose files:           
-            $vina_split --input $s/$b.pdbqt # Running the vina split
+            if [ "$split" = "yes" ]; then
+                # Decomposes each $nl.pdbqt output result into the pose files:           
+                $vina_split --input $s/$b.pdbqt # Running the vina split
+            fi
 
             # Extracts binding energy and RMSD of the out.pdbqt multimodel file:
             energy_md1=$(awk '/MODEL 1/ {getline; if ($0 ~ /REMARK VINA RESULT:/) print; exit}' "$s/$b.pdbqt")
