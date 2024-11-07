@@ -1,5 +1,5 @@
 
-#                                            CODOC VERSION 2024.1.0:                                       #
+#                                            CODOC VERSION 2024.1.1:                                       #
 
 This is a tool to automate the multi-target virtual screening process using several open-source software. 
 CODOC allows the preparation of ligands (using Open Babel or RDkit) and targets (using ADRF/prepare_receptor.sh). 
