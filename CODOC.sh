@@ -1,7 +1,7 @@
 #!/bin/bash
 #################################################################################################################################
 #                                               CODOC VERSION 2024.1:                                                           #
-#                                                   07/11/2024                                                                  #
+#                                                   25/11/2024                                                                  #
 #################################################################################################################################
 
 #################################################################################################################################
@@ -157,7 +157,7 @@ proc_type="GPU"
 file_size="10" # Minimum file size to be rejected in bytes
 pH="7.4" # pH of the medium that will determine the protonation state of the ligands
 max_lig="50000" # Maximum ligand number per folder
-reject="nan|Si|B"
+reject="nan|As|Bi|Si|B"
 vel="med" # Specifying the speed of 3D coordinate generation - 1ª Attempt
 vel2="slow" # Specifying the speed of 3D coordinate generation - 2ª Attempt
 time_limit=$((10 * cpu)) # Maximum conversion time for each ligand for first attempt (in seconds)
@@ -2453,7 +2453,7 @@ list_restart_cpu() {
             nP=$(basename "$P")
             for L in "$ligands"/*/; do
                 nL=$(basename "$L")
-                mkdir -p "$results_doc"/"$selected_result"/"$nL"
+                mkdir -p "$results_doc"/"$selected_result"/"$nP"/"$nL"
             done
             for L in "$P"*/; do
                 nL=$(basename "$L")
@@ -2540,9 +2540,9 @@ list_restart_gpu() {
             nP=$(basename "$P")
             for L in "$ligands"/*/; do
                 nL=$(basename "$L")
-                mkdir -p "$results_doc"/"$selected_result"/"$nL"
+                mkdir -p "$results_doc"/"$selected_result"/"$nP"/"$nL"
             done
-            for L in "$P"*/; do
+            for L in "$P"/*/; do
                 nL=$(basename "$L")
                 count_Lp=$(find "$L" -mindepth 1 -maxdepth 1 -type d | wc -l)
                 count_Lt=$(find "$ligands/$nL" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
@@ -2660,7 +2660,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			07/11/2024					                     #" >> "$dp"
+    echo "#                         			25/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -2931,7 +2931,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1 :                               #" >> "$dp"
-    echo "#                         			07/11/2024					                     #" >> "$dp"
+    echo "#                         			25/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3209,7 +3209,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			07/11/2024					                     #" >> "$dp"
+    echo "#                         			25/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3485,7 +3485,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			07/11/2024					                     #" >> "$dp"
+    echo "#                         			25/11/2024					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
