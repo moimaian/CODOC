@@ -1671,7 +1671,7 @@ run_ligands_conversion() {
     process_sdf2D() {
         local FILE="$1"
             nl=$(basename "$FILE" .sdf)
-            echo  ""$nl"_2D.sdf >>>> "$nl"_3D.pdbqt"
+            echo ""$nl"_2D.sdf >>>> "$nl"_3D.pdbqt"
             smiles=$(obabel "$nl".sdf -osmi | awk '{print $1}' | sed 's/\[C\]/C/g; s/\[O\]/O/g')
             obabel "$nl".sdf -O "$nl".pdbqt -p "$pH" --gen3d "$vel" --partialcharge gasteiger --minimize --sd --steps "$steps" --ff GAFF -r
             sed -i '/^REMARK  Name/d' "$nl".pdbqt
@@ -2459,7 +2459,8 @@ list_restart_cpu() {
                 nL=$(basename "$L")
                 count_Lp=$(find "$L" -mindepth 1 -maxdepth 1 -type d | wc -l)
                 count_Lt=$(find "$ligands/$nL" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
-                if [[ "$count_Lp" != "$count_Lt" ]]; then
+                difference=$(( count_Lt - count_Lp ))
+                if (( difference > 4 )); then
                     echo "$ligands"/"$nL" >> $L_list
                     if ! grep -Fxq "$targets/$nP" "$P_list"; then
                         echo "$targets/$nP" >> "$P_list"
@@ -2468,7 +2469,7 @@ list_restart_cpu() {
                 l_list="$ligands"/."$nL"_list.txt
                 echo -n > "$l_list"
                 count_lp=$(find "$L" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
-                    if [[ "$count_lp" != "$count_Lt" ]]; then
+                    if (( difference > 4 )); then
                         for l in $L/*.pdbqt; do
                             nl=$(basename "$l")
                             echo "$ligands"/"$nL"/"$nl" >> $l_list
@@ -2546,7 +2547,8 @@ list_restart_gpu() {
                 nL=$(basename "$L")
                 count_Lp=$(find "$L" -mindepth 1 -maxdepth 1 -type d | wc -l)
                 count_Lt=$(find "$ligands/$nL" -maxdepth 1 -type f -name "*.pdbqt" | wc -l)
-                if [[ "$count_Lp" != "$count_Lt" ]]; then
+                difference=$(( count_Lt - count_Lp ))
+                if (( difference > 4 )); then
                     echo "$ligands"/"$nL" >> $L_list
                     if ! grep -Fxq "$targets/$nP" "$P_list"; then
                         echo "$targets/$nP" >> "$P_list"
