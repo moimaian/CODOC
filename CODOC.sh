@@ -1537,36 +1537,42 @@ run_lipinski_parameters() {
         local input_ext="$2"
         local output_smi="$3"
         local output_csv="$4"
+        local output_lip="$5"
         for file in "$L"/*."$input_ext"; do
             LIG=$(basename "$file" ."$input_ext")
             obabel "$file" -O "$LIG".smi --title "$LIG" --addtotitle " $DIR" --append "MW logP HBA2 HBD rotors TPSA" -n
             if [[ "$input_ext" == "pdbqt" ]]; then
-                sed -i 's/\[C\]/C/g; s/\[O\]/O/g' "$LIG".smi
+                smi=$(awk 'NR==2 {print $3}' "$file")
+                sed -i "1s/^[^[:space:]]*/$smi/" "$LIG".smi
             fi
-            cat "$LIG".smi >> "$output_smi"
+            cat "$LIG".smi >> "$output_lip"            
+            echo -e "$LIG\t$smi" >> "$output_smi"
+            echo -e "$LIG\t$smi" >> "$output_csv"
             rm "$LIG".smi
         done
-        cat "$output_smi" >> "$output_csv"
     }
 
     # CONVERTING LIGANDS TO SMILES FILES WITH LIPINSKI PARAMETERS:
     for L in "$ligands"/*/; do
         DIR=$(basename "$L")
-        mkdir -p "$LIPINSKI_DIR/$DIR/SMI"
-        mkdir -p "$LIPINSKI_DIR/$DIR/CSV"
-        
+        mkdir -p "$LIPINSKI_DIR/$DIR"        
         first_file=$(find "$L" -maxdepth 1 -type f | head -n 1)
         if [[ -n "$first_file" ]]; then  # Check if there is at least one file in the subfolder
             extension="${first_file##*.}"
             output_smi="$L""$DIR".smi
             output_csv="$L""$DIR".csv
-            echo "Smiles Name DB MW logP HBA2 HBD rotors TPSA" >> "$output_csv"
+            output_lip="$L""$DIR"_lip.csv
+            
+            echo "Name Smiles DB MW logP HBA2 HBD rotors TPSA" >> "$output_lip"
 
-            convert_to_lipinski "$L" "$extension" "$output_smi" "$output_csv"
+            echo -e "name\tsmiles" >> "$output_csv"
+
+            convert_to_lipinski "$L" "$extension" "$output_smi" "$output_csv" "$output_lip"
 
             echo "Converted $DIR.smi >>> $DIR.csv"
-            mv "$output_smi" "$LIPINSKI_DIR/$DIR/SMI"
-            mv "$output_csv" "$LIPINSKI_DIR/$DIR/CSV"
+            mv "$output_lip" "$LIPINSKI_DIR/$DIR"
+            mv "$output_smi" "$LIPINSKI_DIR/$DIR"
+            mv "$output_csv" "$LIPINSKI_DIR/$DIR"
         else
             echo "No files found in the subfolder $L"
         fi
