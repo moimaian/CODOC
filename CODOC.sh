@@ -1,7 +1,7 @@
 #!/bin/bash
 #################################################################################################################################
 #                                               CODOC VERSION 2024.1:                                                           #
-#                                                   25/11/2024                                                                  #
+#                                                   12/06/2025                                                                 #
 #################################################################################################################################
 
 #################################################################################################################################
@@ -128,7 +128,7 @@ BOOST_VERSION="1.84.0"
 BOOST_DIR="$HOME"/boost_"${BOOST_VERSION//./_}"
 VINAGPU_DIR="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1"
 vina_GPU="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1/AutoDock-Vina-GPU-2-1"
-track_progress="$CODOC_DIR/.track_progress.log"
+track_progress="$CODOC_DIR/.track_progress"
 prepare_receptor=""$HOME"/ADFRsuite-1.0/bin/prepare_receptor"
 opencl="/usr/local/cuda"
 results_doc="$CODOC_DIR/RESULTS/DOCKING"
@@ -1679,7 +1679,9 @@ run_ligands_conversion() {
             nl=$(basename "$FILE" .sdf)
             echo ""$nl"_2D.sdf >>>> "$nl"_3D.pdbqt"
             smiles=$(obabel "$nl".sdf -osmi | awk '{print $1}' | sed 's/\[C\]/C/g; s/\[O\]/O/g')
-            obabel "$nl".sdf -O "$nl".pdbqt -p "$pH" --gen3d "$vel" --partialcharge gasteiger --minimize --sd --steps "$steps" --ff GAFF -r
+            obabel "$nl".sdf -O "$nl".smi
+            obabel "$nl".smi -O "$nl".mol2 -p "$pH" --gen3d --minimize --sd --steps "$steps" --ff GAFF -r
+            obabel "$nl".mol2 -O "$nl".pdbqt
             sed -i '/^REMARK  Name/d' "$nl".pdbqt
             sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
             rm "$FILE"
