@@ -1,7 +1,7 @@
 #!/bin/bash
 #################################################################################################################################
 #                                               CODOC VERSION 2024.1:                                                           #
-#                                                   12/06/2025                                                                 #
+#                                                   15/07/2025                                                                 #
 #################################################################################################################################
 
 #################################################################################################################################
@@ -1356,7 +1356,11 @@ elif [ "$quantity_files" -gt 0 ]; then
                 LIG=$(basename "$multi" .smi)
                 total=$(wc -l < "$multi")
                 mkdir "$ligands"/$LIG
-                mv $multi "$ligands"/$LIG                
+                mv $multi "$ligands"/$LIG
+                if grep -q "^ " "$ligands"/"$LIG"/"$LIG".smi; then
+                    echo "Removendo espaços no início das linhas..."
+                    sed -i 's/^ *//' "$ligands"/"$LIG"/"$LIG".smi
+                fi                            
                 obabel "$ligands"/"$LIG"/"$LIG".smi -O "$ligands"/"$LIG"/.smi --split --unique cansmi &
                 obabel_pid=$!
                 ( 
@@ -1692,7 +1696,8 @@ run_ligands_conversion() {
         nl=$(basename "$FILE" .smi)
         smiles=$(awk '{print $1}' "$nl".smi | sed 's/\[C\]/C/g; s/\[O\]/O/g')
         obabel "$nl".smi -O "$nl".mol2 --gen3d -r
-        prepare_ligand -l "$nl".mol2
+        obabel "$nl".mol2 -O "$nl".pdbqt -p
+#        prepare_ligand -l "$nl".mol2
         sed -i '/^REMARK  Name/d' "$nl".pdbqt
         sed -i "1iREMARK  Name = "$nl"\nREMARK SMILES $smiles" "$nl".pdbqt
         rm "$FILE" && rm "$nl".mol2
@@ -2670,7 +2675,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			25/11/2024					                     #" >> "$dp"
+    echo "#                         			15/07/2025					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -2941,7 +2946,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1 :                               #" >> "$dp"
-    echo "#                         			25/11/2024					                     #" >> "$dp"
+    echo "#                         			15/07/2025					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3219,7 +3224,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			25/11/2024					                     #" >> "$dp"
+    echo "#                         			15/07/2025					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
@@ -3495,7 +3500,7 @@ while IFS= read -r P; do
     #  Generates the headers where PARTIAL PERFORMANCES will be recorded in each of the targets:
     echo "########################################################################################" >> "$dp"
     echo "#                                 CODOC VERSION 2024.1:                                #" >> "$dp"
-    echo "#                         			25/11/2024					                     #" >> "$dp"
+    echo "#                         			15/07/2025					                     #" >> "$dp"
     echo "########################################################################################" >> "$dp"
     echo "                                                                                        " >> "$dp"
     echo "########################################################################################" >> "$dp"
