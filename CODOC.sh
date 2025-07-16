@@ -418,15 +418,15 @@ MimeType=chemical/x-cml;chemical/x-xyz;
         ## Install Openbabel 3.0.0:
         echo "Installing Openbabel 3.0.0..."
         echo "$password" | sudo -S apt-get install cmake g++ make libeigen3-dev zlib1g-dev
-        wget https://github.com/openbabel/openbabel/archive/refs/tags/openbabel-3-0-0.tar.gz
-        tar -xzf openbabel-3-0-0.tar.gz -C "$HOME"
-        cd "$HOME"/openbabel-openbabel-3-0-0
+        wget https://github.com/openbabel/openbabel/archive/refs/tags/openbabel-3-1-1.tar.gz
+        tar -xzf openbabel-3-1-1.tar.gz -C "$HOME"
+        cd "$HOME"/openbabel-openbabel-3-1-1
         mkdir build
         cd build
         cmake ..
         make
         echo "$password" | sudo -S make install
-        mv "$CODOC_DIR"/openbabel-3-0-0.tar.gz ""$CODOC_DIR"/bin"
+        mv "$CODOC_DIR"/openbabel-3-1-1.tar.gz ""$CODOC_DIR"/bin"
         kill $YAD_PID
         obabel_version=$(obabel -V)
         yad --text-info --title="Open Babel Version" --text="$obabel_version" \
@@ -565,7 +565,6 @@ EOL
                 --image=$CODOC_DIR/icons/pcP.png &
             YAD_PID=$!
             echo "Installing AutoDock Vina GPU 2.1..."
-            wget https://github.com/ghscheiffer/Vina-GPU-2.1/archive/refs/heads/pbar01.zip
             unzip ${VINA_ZIP} -d "$HOME"
             cd ${VINAGPU_DIR}
             make_file="$VINAGPU_DIR"/Makefile      
