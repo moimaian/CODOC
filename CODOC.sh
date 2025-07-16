@@ -605,7 +605,6 @@ EOL
             ./AutoDock-Vina-GPU-2-1 --config ./input_file_example/2bm2_config.txt            
             echo "$password" | sudo -S cp "$VINAGPU_DIR"/Kernel1_Opt.bin "$VINAGPU_DIR"/Kernel2_Opt.bin /usr/local/cuda
             make clean && make out
-            mv ${VINA_ZIP} ""$CODOC_DIR"/bin"
             kill $YAD_PID
             vinaGPU_version=$(./AutoDock-Vina-GPU-2-1 --version)
             yad --text-info --title="Vina-GPU Version" --text="$vinaGPU_version" \
