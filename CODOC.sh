@@ -128,7 +128,7 @@ BOOST_VERSION="1.84.0"
 BOOST_DIR="$HOME"/boost_"${BOOST_VERSION//./_}"
 VINAGPU_DIR="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1"
 vina_GPU="$HOME/Vina-GPU-2.1/AutoDock-Vina-GPU-2.1/AutoDock-Vina-GPU-2-1"
-track_progress="$CODOC_DIR/.track_progress"
+track_progress="$CODOC_DIR/.track_progress.log"
 prepare_receptor=""$HOME"/ADFRsuite-1.0/bin/prepare_receptor"
 opencl="/usr/local/cuda"
 results_doc="$CODOC_DIR/RESULTS/DOCKING"
@@ -556,7 +556,7 @@ EOL
     install_vinagpu() {
         echo "INSTALL VINA-GPU 2.1 ..."
         # Define Variables:
-        VINA_ZIP=""$CODOC_DIR"/Vina-GPU-2.1-pbar01.zip"
+        VINA_ZIP=""$CODOC_DIR"/bin/Vina-GPU-2.1-pbar01.zip"
 
         if [ ! -d "${VINAGPU_DIR}" ]; then
             yad --info --center --title="CODOC - INSTALL !" \
@@ -565,9 +565,8 @@ EOL
                 --image=$CODOC_DIR/icons/pcP.png &
             YAD_PID=$!
             echo "Installing AutoDock Vina GPU 2.1..."
-            wget https://api.github.com/repos/ghscheiffer/Vina-GPU-2.1/tarball/pbar01
+            wget https://github.com/ghscheiffer/Vina-GPU-2.1/archive/refs/heads/pbar01.zip
             unzip ${VINA_ZIP} -d "$HOME"
-            mv ""$HOME"/Vina-GPU-2.1-pbar01" ""$HOME"/Vina-GPU-2.1"
             cd ${VINAGPU_DIR}
             make_file="$VINAGPU_DIR"/Makefile      
             echo "" > "$make_file" 
@@ -2991,7 +2990,7 @@ while IFS= read -r P; do
 receptor = $p
 ligand_directory = $L
 output_directory = $RR/$nP/$nL/
-opencl_binary_path = $opencl
+opencl_binary_path = $VINAGPU_DIR
 center_x = $c_x
 center_y = $c_y
 center_z = $c_z
@@ -3547,7 +3546,7 @@ receptor = $pR
 flex = $pF
 ligand_directory = $L
 output_directory = $RF/$nP/$nL/
-opencl_binary_path = $opencl
+opencl_binary_path = $VINAGPU_DIR
 center_x = $c_x
 center_y = $c_y
 center_z = $c_z
