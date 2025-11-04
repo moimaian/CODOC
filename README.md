@@ -21,9 +21,9 @@ Extract the file to a working folder, for example, "$HOME/CODOC":
 This is possible graphically in a file manager like Nemo
 - Create the folder $HOME/CODOC
 - Extract the contents of the CODOC-main.zip file to the $HOME/CODOC folder
-Or using the command in the terminal:
+Or, on Downloads directory, use the command in the terminal:
 >$ sudo apt-get install
->$ unzip CODOC-main.zip -d $HOME/Downloads && mkdir $HOME/CODOC && mv $HOME/Downloads/CODOC-main/* $HOME/CODOC
+>$ unzip CODOC-main.zip && mv $HOME/Downloads/CODOC-main $HOME/CODOC
 
 **3**
 Go to the working folder and give permissions for the CODOC.sh file to be executed as a program:
