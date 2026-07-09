@@ -1,0 +1,4 @@
+4pm4_2
+spacing    1
+npts       30 30 30
+center    9.250 8.500 33.250
