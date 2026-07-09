@@ -27,19 +27,19 @@ Or, on Downloads directory, use the command in the terminal:
 >$ unzip CODOC-main.zip && mv $HOME/Downloads/CODOC-main $HOME/CODOC
 
 **3**
-Go to the working folder and give permissions for the CODOC.sh file to be executed as a program:
+Go to the working folder and give permissions for the CODOC.py file to be executed as a program:
 This is possible graphically in a file manager like Nemo
-- Right-click on the program (CODOC.sh bash script)
+- Right-click on the program (CODOC.py bash script)
 - In the menu select properties
 - In the opened window select permissions
 - Check the box to allow execution as a program.
 Or using the command in the terminal:
->$ chmod +x $HOME/CODOC/CODOC.sh
+>$ chmod +x $HOME/CODOC/CODOC.py
 
 **4**
-In a file manager double-click on the CODOC.sh icon and click on run in the terminal.
+In a file manager double-click on the CODOC.py icon and click on run in the terminal.
 Or run in the terminal:
->$ cd $HOME/CODOC && ./CODOC.sh
+>$ cd $HOME/CODOC && python3 ./CODOC.py
 
 **Notes:**
 When executed it will:
@@ -74,7 +74,7 @@ SECURITY BOOT SYSTEM! OTHERWISE THE VINA-GPU ON LINUX WILL NOT BE AUTHORIZED TO 
 
 #                                      2. **USE AND DIRECTORY ORGANIZATION:**                                  #
 
-Inside the folder where CODOC.sh is located there should be four folders: LIGANDS, TARGETS, RESULTS, in addition to the original folders, bin, icons and test.
+Inside the folder where CODOC.py is located there should be four folders: LIGANDS, TARGETS, RESULTS, in addition to the original folders, bin, icons and test.
 
 **LIGANDS:**
 You must add multi-model files within the LIGANDS folder and single molecule files must be placed in subfolders containing an acronym that identifies the database (Ex.: ZINC_FDA, ZINC_NP, CHEMBL, COCONUT, ATLAS, CMNPD, IBIS... ). Each subfolder present within the LIGANDS directory must contain a single file format such as: .sdf, .smi, .mol2, .pdb or .pdbqt.
@@ -133,9 +133,9 @@ CoGen3D.py
 
 **test:**
 In this folder you can find:
-- A LIGANDS folder containing multi-model ligand files in different formats. They should be transferred to the LIGANDS folder where CODOC.sh is located and then split into subfolders containing the individual structure files (this is done in ligands prepare);
-- A TARGETS folder for performing rigid docking. It contains two targets subfolders containing grid.txt and protein.pdbqt. They should be transferred to the TARGETS folder where CODOC.sh is located;
-- A TARGETS_FLEX folder for performing flexible docking. It contains two subfolders (PROTEIN_A and PROTEIN_B) containing grid.txt, protein_rigid.pdbqt and protein_flex.pdbqt. They should be transferred to the TARGETS folder where CODOC.sh is located;
+- A LIGANDS folder containing multi-model ligand files in different formats. They should be transferred to the LIGANDS folder where CODOC.py is located and then split into subfolders containing the individual structure files (this is done in ligands prepare);
+- A TARGETS folder for performing rigid docking. It contains two targets subfolders containing grid.txt and protein.pdbqt. They should be transferred to the TARGETS folder where CODOC.py is located;
+- A TARGETS_FLEX folder for performing flexible docking. It contains two subfolders (PROTEIN_A and PROTEIN_B) containing grid.txt, protein_rigid.pdbqt and protein_flex.pdbqt. They should be transferred to the TARGETS folder where CODOC.py is located;
 
 **icon:**
 In this folder are the icons that will be used by different CODOC windows.
