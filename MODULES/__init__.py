@@ -1,1 +1,0 @@
-# CODOC modules package
