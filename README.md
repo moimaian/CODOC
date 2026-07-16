@@ -2,7 +2,7 @@
 #                                            CODOC VERSION 2026.1.1:                                       #
 
 This is a tool for automating the multi-target virtual screening process using various open-source software applications.
-CODOC enables the preparation of ligands (using Open Babel or RDKit) and targets (using ADRF/prepare_receptor.sh).
+CODOC enables the preparation of ligands (using Open Babel or RDKit) and targets (using ADRF/prepare_receptor.sh and PDB2PQR/PROPKA).
 The tool performs molecular docking calculations using either the CPU (AutoDock Vina 1.2.5) or GPU (Vina-GPU 2.1).
 It generates CSV dataframes containing ligand information and pose results, organized into folders by
 target and subfolders by ligand database.
