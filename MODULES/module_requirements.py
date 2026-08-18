@@ -96,7 +96,7 @@ VINA_GPU_ARCHIVE = "Vina-GPU-2.1.zip"
 BOOST_ARCHIVE = "boost_1_84_0.tar.gz"
 
 # Vina-GPU (this project's custom progress-bar fork) and Boost are too large to keep in the git
-# repo's bin/ folder, so a fresh clone won't have them bundled locally. CODOC's own GitHub
+# repo's BIN/ folder, so a fresh clone won't have them bundled locally. CODOC's own GitHub
 # Release hosts both as a fallback download source for Install Requirements.
 CODOC_DEPS_RELEASE_URL = "https://github.com/moimaian/CODOC/releases/download/deps-v1"
 VINA_GPU_ARCHIVE_URL = f"{CODOC_DEPS_RELEASE_URL}/{VINA_GPU_ARCHIVE}"
@@ -442,7 +442,7 @@ def ensure_vina_binaries(bin_dir: str) -> str:
 
 def _ensure_bundled_archive(archive_path: str, download_url: str, label: str) -> None:
     """Make sure `archive_path` exists, downloading it from CODOC's GitHub Release if it
-    isn't already bundled in bin/ (e.g. on a fresh clone that never had the large archives
+    isn't already bundled in BIN/ (e.g. on a fresh clone that never had the large archives
     committed). Leaves a pre-existing bundled file untouched and never re-downloads it."""
     if os.path.isfile(archive_path):
         return
@@ -497,7 +497,7 @@ def ensure_boost_installation(app_dir: str) -> str:
     if get_boost_version() == BOOST_VERSION:
         return paths["root"]
 
-    archive_path = os.path.join(app_dir, "bin", BOOST_ARCHIVE)
+    archive_path = os.path.join(app_dir, "BIN", BOOST_ARCHIVE)
     _ensure_bundled_archive(archive_path, BOOST_ARCHIVE_URL, "Boost")
 
     with tempfile.TemporaryDirectory(prefix="codoc-boost-") as temp_dir:
@@ -895,7 +895,7 @@ def _rebuild_vina_gpu(install_dir: str) -> None:
 
 def ensure_vina_gpu_installation(app_dir: str) -> str:
     paths = vina_gpu_paths()
-    archive_path = os.path.join(app_dir, "bin", VINA_GPU_ARCHIVE)
+    archive_path = os.path.join(app_dir, "BIN", VINA_GPU_ARCHIVE)
     _ensure_bundled_archive(archive_path, VINA_GPU_ARCHIVE_URL, "Vina-GPU")
 
     if not os.path.isdir(paths["install_dir"]):
@@ -952,7 +952,7 @@ class RequirementsInstaller(cast(Any, QDialog)):
             raise RuntimeError(f"PyQt5 is required to open RequirementsInstaller: {_PYQT_IMPORT_ERROR}")
         super().__init__(parent)
         self.app_dir = app_dir or venv_paths()["app_dir"]
-        self.bin_dir = os.path.join(self.app_dir, "bin")
+        self.bin_dir = os.path.join(self.app_dir, "BIN")
         self.python_rows: list[Any] = []
         self.system_rows: list[Any] = []
         self.tool_rows: list[Any] = []

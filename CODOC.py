@@ -388,8 +388,8 @@ class DockingWorker(QThread):
         self.docking_type = docking_type
         self.processing_type = processing_type
         self.run_type = run_type
-        self.vina = os.path.join(app_dir, "bin", "vina_1.2.5_linux_x86_64")
-        self.vina_split = os.path.join(app_dir, "bin", "vina_split_1.2.5_linux_x86_64")
+        self.vina = os.path.join(app_dir, "BIN", "vina_1.2.5_linux_x86_64")
+        self.vina_split = os.path.join(app_dir, "BIN", "vina_split_1.2.5_linux_x86_64")
         self.vina_gpu = os.path.join(str(Path.home()), "Vina-GPU-2.1", "AutoDock-Vina-GPU-2.1", "AutoDock-Vina-GPU-2-1")
 
     def run(self) -> None:
@@ -1625,7 +1625,7 @@ class MainWindow(QMainWindow):
         self.ligands_dir = os.path.join(self.app_dir, "LIGANDS")
         self.targets_dir = os.path.join(self.app_dir, "TARGETS")
         self.jobs_dir = os.path.join(self.app_dir, "JOBS")
-        self.bin_dir = os.path.join(self.app_dir, "bin")
+        self.bin_dir = os.path.join(self.app_dir, "BIN")
         self.current_job_name = ""
         self.results_dir = ""
         self.conversion_results_dir = ""
@@ -3441,7 +3441,7 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self, manage_job: bool = False) -> None:
         self._collect_settings_from_widgets()
-        self.bin_dir = os.path.join(self.app_dir, "bin")
+        self.bin_dir = os.path.join(self.app_dir, "BIN")
         if hasattr(self, "ed_jobs_dir"):
             self.jobs_dir = self.ed_jobs_dir.text().strip() or self.jobs_dir
         os.makedirs(self.jobs_dir, exist_ok=True)
@@ -3489,7 +3489,7 @@ class MainWindow(QMainWindow):
             self.targets_dir = payload.get("targets_dir", self.targets_dir)
             self.jobs_dir = payload.get("jobs_dir", self.jobs_dir)
             self.current_job_name = payload.get("current_job_name", self.current_job_name)
-            self.bin_dir = os.path.join(self.app_dir, "bin")
+            self.bin_dir = os.path.join(self.app_dir, "BIN")
             docking = payload.get("docking", {})
             ligand = payload.get("ligand", {})
             results_view = payload.get("results_view", {})

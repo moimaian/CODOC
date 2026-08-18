@@ -139,7 +139,7 @@ class SplashScreen(QWidget):
         self.status["desktop_ok"] = True
         self._set_target(25)
 
-        for folder in ("JOBS", "MODULES", "TEST", "ICONS", "LIGANDS", "TARGETS", "bin"):
+        for folder in ("JOBS", "MODULES", "TEST", "ICONS", "LIGANDS", "TARGETS", "BIN"):
             os.makedirs(os.path.join(self.dp_dir, folder), exist_ok=True)
         self.status["folders_ok"] = True
         self._set_target(60)
