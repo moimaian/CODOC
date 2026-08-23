@@ -102,7 +102,7 @@ try:
 except Exception:
     dimorphite_dl = None
 
-from PyQt5.QtCore import QThread, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QSettings, QSize, QThread, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QGuiApplication, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -137,6 +137,7 @@ from MODULES.module_requirements import RequirementsInstaller, detect_hardware, 
 from MODULES.module_target_prepare import TargetPrepareError, find_pdb2pqr, prepare_receptor_with_protonation, summarize_pka_table
 from MODULES.module_report import generate_final_report as _generate_final_report_docx, load_job_settings
 from MODULES.splash_screen import SplashScreen
+from MODULES import i18n
 
 APP_NAME = "CODOC"
 APP_DIR_NAME = "CODOC"
@@ -1593,6 +1594,17 @@ class LigandToolsWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+
+        # Idioma da interface (PT-BR/EN, ver MODULES/i18n.py): lido de QSettings para persistir
+        # entre sessões, com o mesmo padrão de bandeiras BR/UK do CODRUG (i18n.py + widget de
+        # bandeiras ao lado do monitor de CPU/GPU). self._i18n_registry guarda (chave, apply_fn,
+        # kwargs) para cada texto traduzido, permitindo reaplicar tudo instantaneamente ao trocar
+        # de idioma sem precisar reconstruir nenhum widget.
+        self._idioma = QSettings("CODOC", "CODOC").value("idioma", i18n.IDIOMA_PADRAO)
+        if self._idioma not in ("en", "pt"):
+            self._idioma = i18n.IDIOMA_PADRAO
+        self._i18n_registry: list[tuple[str, Any, dict[str, Any]]] = []
+
         self.app_dir = os.path.abspath(os.path.dirname(__file__))
         self.settings_path = os.path.join(self.app_dir, ".codoc_settings.json")
         self.legacy_codoc = os.path.join(str(Path.home()), "CODOC", "CODOC.sh")
@@ -1604,7 +1616,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._restore_active_job()
 
-        self.setWindowTitle("CODOC - Python Molecular Docking Tool")
+        self._tr("app_titulo", self.setWindowTitle)
         self.setStyleSheet(_SS_MAIN)
         logo_path = os.path.join(self.app_dir, "ICONS", "logo_codocP.png")
         if os.path.isfile(logo_path):
@@ -1705,51 +1717,62 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
         menu = menu_bar.addMenu("Menu")
 
-        action_home = QAction("Home", self)
+        action_home = QAction(self)
+        self._tr("menu_home", action_home.setText)
         action_home.triggered.connect(lambda: self.tabs.setCurrentIndex(0))
         menu.addAction(action_home)
 
-        action_step1 = QAction("Step 1 - Docking Settings", self)
+        action_step1 = QAction(self)
+        self._tr("menu_step1", action_step1.setText)
         action_step1.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
         menu.addAction(action_step1)
 
-        action_step2 = QAction("Step 2 - Prepare Ligands", self)
+        action_step2 = QAction(self)
+        self._tr("menu_step2", action_step2.setText)
         action_step2.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
         menu.addAction(action_step2)
 
-        action_step3 = QAction("Step 3 - Prepare Targets", self)
+        action_step3 = QAction(self)
+        self._tr("menu_step3", action_step3.setText)
         action_step3.triggered.connect(lambda: self.tabs.setCurrentIndex(3))
         menu.addAction(action_step3)
 
-        action_step4 = QAction("Step 4 - Run Molecular Docking", self)
+        action_step4 = QAction(self)
+        self._tr("menu_step4", action_step4.setText)
         action_step4.triggered.connect(lambda: self.tabs.setCurrentIndex(4))
         menu.addAction(action_step4)
 
-        action_step5 = QAction("Step 5 - View Results", self)
+        action_step5 = QAction(self)
+        self._tr("menu_step5", action_step5.setText)
         action_step5.triggered.connect(lambda: self.tabs.setCurrentIndex(5))
         menu.addAction(action_step5)
 
         menu.addSeparator()
 
-        action_exit = QAction("Exit", self)
+        action_exit = QAction(self)
+        self._tr("menu_exit", action_exit.setText)
         action_exit.triggered.connect(self._close_from_action)
         menu.addAction(action_exit)
 
-        help_menu = menu_bar.addMenu("Help")
+        help_menu = menu_bar.addMenu("")
+        self._tr("menu_help", help_menu.setTitle)
 
-        action_install = QAction("Install Requirements", self)
+        action_install = QAction(self)
+        self._tr("menu_install_requirements", action_install.setText)
         action_install.triggered.connect(self.show_requirements_installer)
         help_menu.addAction(action_install)
 
         help_menu.addSeparator()
 
-        action_github = QAction("Code and Tutorials (Github)", self)
+        action_github = QAction(self)
+        self._tr("menu_github", action_github.setText)
         action_github.triggered.connect(self.open_github_page)
         help_menu.addAction(action_github)
 
         help_menu.addSeparator()
 
-        action_about = QAction("About Us", self)
+        action_about = QAction(self)
+        self._tr("menu_about", action_about.setText)
         action_about.triggered.connect(self.show_about)
         help_menu.addAction(action_about)
 
@@ -1762,43 +1785,78 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         QMessageBox.about(
             self,
-            "ABOUT US",
-            "CODOC\n"
-            "Computational Molecular Docking Platform\n"
-            "\n"
-            "Developed by:\n"
-            "   Allan Michael Junkert\n"
-            "   Gustavo Henrique Scheiffer\n"
-            "   Moises Maia Neto\n"
-            "   Roberto Pontarolo\n"
-            "   Universidade Federal do Parana (UFPR), Brazil\n"
-            "\n"
-            "Contact:\n"
-            "   moimaian@gmail.com\n"
-            "\n"
-            "Version 1.0 (beta)"
+            i18n.t("msg_title_about", self._idioma),
+            i18n.t("msg_about_body", self._idioma),
         )
 
-    def _title(self, text: str) -> QLabel:
-        label = QLabel(text)
+    def _tr(self, chave: str, apply_fn, **kwargs) -> None:
+        """Registra apply_fn (ex.: label.setText, btn.setToolTip, lambda txt: self.tabs.setTabText(0, txt))
+        para ser reexecutado sempre que o idioma da interface mudar, e já aplica o texto do idioma
+        atual imediatamente. chave/kwargs sao repassados para i18n.t() a cada reaplicacao, entao
+        strings com placeholders dinamicos continuam corretas apos trocar de idioma."""
+        self._i18n_registry.append((chave, apply_fn, kwargs))
+        apply_fn(i18n.t(chave, self._idioma, **kwargs))
+
+    def _definir_idioma(self, idioma: str) -> None:
+        if idioma == self._idioma:
+            return
+        self._idioma = idioma
+        QSettings("CODOC", "CODOC").setValue("idioma", idioma)
+        for chave, apply_fn, kwargs in self._i18n_registry:
+            apply_fn(i18n.t(chave, self._idioma, **kwargs))
+            # A traducao para PT costuma ser mais longa que o texto original em EN - botoes com
+            # largura fixa (a maioria) foram dimensionados uma unica vez na construcao da interface,
+            # para o texto do idioma inicial. _ensure_button_text_fits so AUMENTA a largura quando
+            # necessario (nunca reduz), entao o layout permanece estavel ao alternar os idiomas.
+            target = getattr(apply_fn, "__self__", None)
+            if isinstance(target, QPushButton):
+                self._ensure_button_text_fits(target)
+
+    @staticmethod
+    def _ensure_button_text_fits(button: QPushButton) -> None:
+        text = button.text() or ""
+        if not text.strip():
+            return
+        button.ensurePolished()
+        required_width = button.sizeHint().width() + 8
+        if button.icon() and not button.icon().isNull():
+            required_width += button.iconSize().width()
+
+        current_min = button.minimumWidth()
+        current_max = button.maximumWidth()
+        has_fixed_width = current_min > 0 and current_min == current_max
+
+        if has_fixed_width:
+            if current_min < required_width:
+                button.setFixedWidth(required_width)
+            return
+
+        if current_min < required_width:
+            button.setMinimumWidth(required_width)
+
+    def _title(self, key: str) -> QLabel:
+        label = QLabel()
         label.setAlignment(Qt.AlignCenter)
         label.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        self._tr(key, label.setText)
         return label
 
     def _nav_buttons_row(self, previous_index: Optional[int], next_index: Optional[int]) -> QHBoxLayout:
         row = QHBoxLayout()
 
-        back_button = QPushButton(" << BACK ")
+        back_button = QPushButton()
         back_button.setFixedWidth(200)
         back_button.setStyleSheet(_SS_BTN_NAV)
         back_button.setEnabled(previous_index is not None)
+        self._tr("btn_back", back_button.setText)
         if previous_index is not None:
             back_button.clicked.connect(lambda: self.tabs.setCurrentIndex(previous_index))
 
-        next_button = QPushButton(" NEXT >> ")
+        next_button = QPushButton()
         next_button.setFixedWidth(200)
         next_button.setStyleSheet(_SS_BTN_NAV)
         next_button.setEnabled(next_index is not None)
+        self._tr("btn_next", next_button.setText)
         if next_index is not None:
             next_button.clicked.connect(lambda: self.tabs.setCurrentIndex(next_index))
 
@@ -1846,14 +1904,16 @@ class MainWindow(QMainWindow):
         logo.setAlignment(Qt.AlignCenter)
         inner_layout.addWidget(logo)
 
-        title = QLabel("Computational Molecular Docking Plataform")
+        title = QLabel()
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        self._tr("home_title", title.setText)
         inner_layout.addWidget(title)
 
-        subtitle = QLabel("Multi-target docking with Vina")
+        subtitle = QLabel()
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("font-size: 11pt; color: #6E8CA8;")
+        self._tr("home_subtitle", subtitle.setText)
         inner_layout.addWidget(subtitle)
 
         top_separator = QFrame()
@@ -1879,7 +1939,8 @@ class MainWindow(QMainWindow):
             row.addStretch(1)
             inner_layout.addLayout(row)
 
-        cpu_grp = QGroupBox("Hardware Specs - CPU")
+        cpu_grp = QGroupBox()
+        self._tr("home_grp_cpu", cpu_grp.setTitle)
         cpu_grp.setStyleSheet(home_group_style)
         cpu_form = QFormLayout(cpu_grp)
         cpu_form.setHorizontalSpacing(16)
@@ -1893,7 +1954,8 @@ class MainWindow(QMainWindow):
             cpu_form.addRow(key_label, value_label)
         hw_row.addWidget(cpu_grp, 1)
 
-        gpu_grp = QGroupBox("Hardware Specs - GPU")
+        gpu_grp = QGroupBox()
+        self._tr("home_grp_gpu", gpu_grp.setTitle)
         gpu_grp.setStyleSheet(home_group_style)
         gpu_form = QFormLayout(gpu_grp)
         gpu_form.setHorizontalSpacing(16)
@@ -1911,7 +1973,8 @@ class MainWindow(QMainWindow):
         hw_wrap.setLayout(hw_row)
         add_centered_group(hw_wrap)
 
-        sw_grp = QGroupBox("Software Specs")
+        sw_grp = QGroupBox()
+        self._tr("home_grp_sw", sw_grp.setTitle)
         sw_grp.setStyleSheet(home_group_style)
         sw_grid = QGridLayout(sw_grp)
         sw_grid.setHorizontalSpacing(24)
@@ -1933,25 +1996,28 @@ class MainWindow(QMainWindow):
             sw_grid.addWidget(version_label, row, col + 1)
         add_centered_group(sw_grp)
 
-        pipe_grp = QGroupBox("Pipeline - Steps")
+        pipe_grp = QGroupBox()
+        self._tr("home_grp_pipeline", pipe_grp.setTitle)
         pipe_grp.setStyleSheet(home_group_style)
         pipe_grid = QGridLayout(pipe_grp)
         pipe_grid.setHorizontalSpacing(20)
         pipe_grid.setVerticalSpacing(6)
         pipe_grid.setColumnStretch(1, 1)
         steps = [
-            ("Step 1 - Docking Settings", "Configure directories, docking parameters and binary paths."),
-            ("Step 2 - Prepare Ligands", "Split inputs, calculate ligand descriptors, filter, convert to PDBQT and recover failures."),
-            ("Step 3 - Prepare Targets", "Prepare rigid or flexible receptors, build grid boxes and manage target folders."),
-            ("Step 4 - Run Molecular Docking", "Launch rigid or flexible docking on CPU or GPU, including restart workflows."),
-            ("Step 5 - View Results", "Inspect docking tables, filter top ligands by RMSD and plot ranked hits."),
+            ("home_step1_name", "home_step1_desc"),
+            ("home_step2_name", "home_step2_desc"),
+            ("home_step3_name", "home_step3_desc"),
+            ("home_step4_name", "home_step4_desc"),
+            ("home_step5_name", "home_step5_desc"),
         ]
-        for row, (step_name, desc) in enumerate(steps):
-            step_label = QLabel(f"<b>{step_name}</b>")
+        for row, (name_key, desc_key) in enumerate(steps):
+            step_label = QLabel()
             step_label.setStyleSheet("color:#C9D1D9;font-size:9pt;")
-            desc_label = QLabel(desc)
+            self._tr(name_key, lambda txt, w=step_label: w.setText(f"<b>{txt}</b>"))
+            desc_label = QLabel()
             desc_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
             desc_label.setWordWrap(False)
+            self._tr(desc_key, desc_label.setText)
             pipe_grid.addWidget(step_label, row, 0)
             pipe_grid.addWidget(desc_label, row, 1)
         add_centered_group(pipe_grp)
@@ -1962,14 +2028,16 @@ class MainWindow(QMainWindow):
         bottom_separator.setStyleSheet("color:#2A4A6B;")
         inner_layout.addWidget(bottom_separator)
 
-        btn_start = QPushButton("START")
+        btn_start = QPushButton()
         btn_start.setFixedWidth(240)
+        self._tr("home_btn_start", btn_start.setText)
         btn_start.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
         inner_layout.addWidget(btn_start, alignment=Qt.AlignCenter)
 
-        btn_install = QPushButton("Install Requirements")
+        btn_install = QPushButton()
         btn_install.setFixedWidth(240)
         btn_install.setStyleSheet(_SS_BTN_NAV)
+        self._tr("home_btn_install", btn_install.setText)
         btn_install.clicked.connect(self.show_requirements_installer)
         inner_layout.addWidget(btn_install, alignment=Qt.AlignCenter)
 
@@ -1982,7 +2050,8 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(scroll)
 
-        self.tabs.addTab(tab, "HOME")
+        home_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_home", lambda txt, i=home_tab_index: self.tabs.setTabText(i, txt))
 
     def _home_hw_cpu_info(self) -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = []
@@ -2215,13 +2284,14 @@ class MainWindow(QMainWindow):
     def _build_config_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("Step 1. Docking Settings"))
+        layout.addWidget(self._title("title_step1"))
 
         self.ed_ligands_dir = QLineEdit(self.ligands_dir)
         self.ed_targets_dir = QLineEdit(self.targets_dir)
         self.ed_jobs_dir = QLineEdit(self.jobs_dir)
 
-        settings_box = QGroupBox("Docking parameters")
+        settings_box = QGroupBox()
+        self._tr("s1_grp_docking_params", settings_box.setTitle)
         settings_box.setMinimumWidth(1000)
         settings_form = QGridLayout(settings_box)
         settings_form.setHorizontalSpacing(18)
@@ -2251,29 +2321,36 @@ class MainWindow(QMainWindow):
         self.cb_run_type.currentTextChanged.connect(self._toggle_restart_combo)
 
         param_rows = [
-            ("Scoring function", self.cb_scoring, "Split results", self.cb_split),
-            ("CPU threads", self.sp_cpu_threads, "CPU parallelism", self.sp_cpu_parallel),
-            ("Exhaustiveness", self.sp_exhaustiveness, "GPU threads", self.sp_gpu_threads),
-            ("Poses", self.sp_poses, "Energy range", self.sp_energy),
-            ("Minimum RMSD", self.sp_min_rmsd, "OpenCL platform", self.cb_opencl_platform),
-            ("Docking type", self.cb_docking_type, "Processing type", self.cb_processing_type),
-            ("Vina mode", self.cb_docking_mode, "Run type", self.cb_run_type),
+            ("s1_lbl_scoring_function", self.cb_scoring, "s1_lbl_split_results", self.cb_split),
+            ("s1_lbl_cpu_threads", self.sp_cpu_threads, "s1_lbl_cpu_parallelism", self.sp_cpu_parallel),
+            ("s1_lbl_exhaustiveness", self.sp_exhaustiveness, "s1_lbl_gpu_threads", self.sp_gpu_threads),
+            ("s1_lbl_poses", self.sp_poses, "s1_lbl_energy_range", self.sp_energy),
+            ("s1_lbl_min_rmsd", self.sp_min_rmsd, "s1_lbl_opencl_platform", self.cb_opencl_platform),
+            ("s1_lbl_docking_type", self.cb_docking_type, "s1_lbl_processing_type", self.cb_processing_type),
+            ("s1_lbl_vina_mode", self.cb_docking_mode, "s1_lbl_run_type", self.cb_run_type),
         ]
-        for row_idx, (label_left, widget_left, label_right, widget_right) in enumerate(param_rows):
-            settings_form.addWidget(QLabel(label_left), row_idx, 0)
+        for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(param_rows):
+            label_left_widget = QLabel(); self._tr(key_left, label_left_widget.setText)
+            label_right_widget = QLabel(); self._tr(key_right, label_right_widget.setText)
+            settings_form.addWidget(label_left_widget, row_idx, 0)
             settings_form.addWidget(widget_left, row_idx, 1)
-            settings_form.addWidget(QLabel(label_right), row_idx, 2)
+            settings_form.addWidget(label_right_widget, row_idx, 2)
             settings_form.addWidget(widget_right, row_idx, 3)
         final_param_row = len(param_rows)
-        settings_form.addWidget(QLabel("OpenCL device"), final_param_row, 0)
+        lbl_opencl_device = QLabel(); self._tr("s1_lbl_opencl_device", lbl_opencl_device.setText)
+        settings_form.addWidget(lbl_opencl_device, final_param_row, 0)
         settings_form.addWidget(self.cb_opencl_device, final_param_row, 1, 1, 3)
-        settings_form.addWidget(QLabel("Result name"), final_param_row + 1, 0)
+        lbl_result_name = QLabel(); self._tr("s1_lbl_result_name", lbl_result_name.setText)
+        settings_form.addWidget(lbl_result_name, final_param_row + 1, 0)
         settings_form.addWidget(self.cb_existing_result, final_param_row + 1, 1, 1, 3)
-        settings_form.addWidget(QLabel("Ligands"), final_param_row + 2, 0)
+        lbl_ligands = QLabel(); self._tr("s1_lbl_ligands", lbl_ligands.setText)
+        settings_form.addWidget(lbl_ligands, final_param_row + 2, 0)
         settings_form.addWidget(self._path_row(self.ed_ligands_dir, self._browse_ligands_dir), final_param_row + 2, 1, 1, 3)
-        settings_form.addWidget(QLabel("Targets"), final_param_row + 3, 0)
+        lbl_targets = QLabel(); self._tr("s1_lbl_targets", lbl_targets.setText)
+        settings_form.addWidget(lbl_targets, final_param_row + 3, 0)
         settings_form.addWidget(self._path_row(self.ed_targets_dir, self._browse_targets_dir), final_param_row + 3, 1, 1, 3)
-        settings_form.addWidget(QLabel("Jobs"), final_param_row + 4, 0)
+        lbl_jobs = QLabel(); self._tr("s1_lbl_jobs", lbl_jobs.setText)
+        settings_form.addWidget(lbl_jobs, final_param_row + 4, 0)
         settings_form.addWidget(self._path_row(self.ed_jobs_dir, self._browse_jobs_dir), final_param_row + 4, 1, 1, 3)
         self._load_opencl_choices()
         self._toggle_docking_mode_options()
@@ -2286,12 +2363,14 @@ class MainWindow(QMainWindow):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        btn_save = QPushButton("Save settings")
+        btn_save = QPushButton()
         btn_save.setFixedWidth(180)
+        self._tr("s1_btn_save_settings", btn_save.setText)
         btn_save.clicked.connect(lambda: self._save_settings(manage_job=True))
-        btn_reload = QPushButton("Reload settings")
+        btn_reload = QPushButton()
         btn_reload.setFixedWidth(180)
         btn_reload.setStyleSheet(_SS_BTN_SECONDARY)
+        self._tr("s1_btn_reload_settings", btn_reload.setText)
         btn_reload.clicked.connect(self._load_settings)
         row.addWidget(btn_save)
         row.addWidget(btn_reload)
@@ -2300,13 +2379,14 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(0, 2))
-        self.tabs.addTab(tab, "STEP 1")
+        step1_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_step1", lambda txt, i=step1_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_result_folders()
 
     def _build_ligands_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("Step 2. Prepare Ligands"))
+        layout.addWidget(self._title("title_step2"))
 
         ligands_group_width = 1000
 
@@ -2319,7 +2399,8 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
-        box = QGroupBox("Ligand preparation settings")
+        box = QGroupBox()
+        self._tr("s2_grp_prep_settings", box.setTitle)
         box_layout = QVBoxLayout(box)
         self.lbl_lig_summary = QLabel()
         box_layout.addWidget(self.lbl_lig_summary)
@@ -2377,55 +2458,59 @@ class MainWindow(QMainWindow):
 
         # Column 1: conversion engine and minimization settings.
         column_1 = [
-            ("Conversion engine", self.cb_lig_conversion_engine),
-            ("Max ligands/folder", self.sp_lig_max_folder),
-            ("Minimum file size", self.sp_lig_file_size),
-            ("Conversion Workers (Parallelization)", self.sp_lig_workers),
-            ("Minimization algorithm", self.cb_lig_min_algorithm),
-            ("Minimization force field", self.cb_lig_min_forcefield),
-            ("Minimization steps", self.sp_lig_steps),
+            ("s2_lbl_conversion_engine", self.cb_lig_conversion_engine),
+            ("s2_lbl_max_folder", self.sp_lig_max_folder),
+            ("s2_lbl_min_file_size", self.sp_lig_file_size),
+            ("s2_lbl_workers", self.sp_lig_workers),
+            ("s2_lbl_min_algorithm", self.cb_lig_min_algorithm),
+            ("s2_lbl_min_forcefield", self.cb_lig_min_forcefield),
+            ("s2_lbl_min_steps", self.sp_lig_steps),
         ]
         # Column 2: druggability filter thresholds.
         column_2 = [
-            ("MW min.", self.sp_lig_mw_min),
-            ("MW máx.", self.sp_lig_mw_max),
-            ("LogP min.", self.sp_lig_logp_min),
-            ("LogP máx.", self.sp_lig_logp_max),
-            ("H Donor máx.", self.sp_lig_hd),
-            ("H Acceptor máx.", self.sp_lig_ha),
-            ("Rotatable Bonds máx.", self.sp_lig_rot),
-            ("TPSA máx.", self.sp_lig_tpsa),
+            ("s2_lbl_mw_min", self.sp_lig_mw_min),
+            ("s2_lbl_mw_max", self.sp_lig_mw_max),
+            ("s2_lbl_logp_min", self.sp_lig_logp_min),
+            ("s2_lbl_logp_max", self.sp_lig_logp_max),
+            ("s2_lbl_hdonor_max", self.sp_lig_hd),
+            ("s2_lbl_hacceptor_max", self.sp_lig_ha),
+            ("s2_lbl_rot_max", self.sp_lig_rot),
+            ("s2_lbl_tpsa_max", self.sp_lig_tpsa),
         ]
         # Column 3: protonation, rejection and conversion pacing settings.
         column_3 = [
-            ("Protonation pH", self.sp_lig_ph),
-            ("Rejected Elements", self.ed_lig_reject),
-            ("1st speed", self.cb_lig_speed_first),
-            ("2nd speed", self.cb_lig_speed_second),
-            ("1st Timeout (s)", self.sp_lig_timeout_first),
-            ("2nd Timeout (s)", self.sp_lig_timeout_second),
+            ("s2_lbl_ph", self.sp_lig_ph),
+            ("s2_lbl_rejected", self.ed_lig_reject),
+            ("s2_lbl_speed1", self.cb_lig_speed_first),
+            ("s2_lbl_speed2", self.cb_lig_speed_second),
+            ("s2_lbl_timeout1", self.sp_lig_timeout_first),
+            ("s2_lbl_timeout2", self.sp_lig_timeout_second),
         ]
         for column_idx, column in enumerate((column_1, column_2, column_3)):
             label_col = column_idx * 2
             widget_col = label_col + 1
-            for row_idx, (label_text, widget) in enumerate(column):
-                settings_form.addWidget(QLabel(label_text), row_idx, label_col)
+            for row_idx, (label_key, widget) in enumerate(column):
+                label_widget = QLabel(); self._tr(label_key, label_widget.setText)
+                settings_form.addWidget(label_widget, row_idx, label_col)
                 settings_form.addWidget(widget, row_idx, widget_col)
         box_layout.addLayout(settings_form)
 
         row = QHBoxLayout()
         row.setAlignment(Qt.AlignCenter)
         row.setSpacing(10)
-        btn_refresh = QPushButton("Refresh summary")
+        btn_refresh = QPushButton()
         btn_refresh.setFixedWidth(220)
         btn_refresh.setStyleSheet(_SS_BTN_SECONDARY)
+        self._tr("s2_btn_refresh_summary", btn_refresh.setText)
         btn_refresh.clicked.connect(self._refresh_ligand_summary)
-        btn_open = QPushButton("Open ligands folder")
+        btn_open = QPushButton()
         btn_open.setFixedWidth(220)
         btn_open.setStyleSheet(_SS_BTN_SECONDARY)
+        self._tr("s2_btn_open_ligands_folder", btn_open.setText)
         btn_open.clicked.connect(lambda: self._open_path(self.ligands_dir))
-        btn_save_lig = QPushButton("Save ligand settings")
+        btn_save_lig = QPushButton()
         btn_save_lig.setFixedWidth(220)
+        self._tr("s2_btn_save_lig_settings", btn_save_lig.setText)
         btn_save_lig.clicked.connect(self._save_settings)
         row.addWidget(btn_refresh)
         row.addWidget(btn_open)
@@ -2433,22 +2518,24 @@ class MainWindow(QMainWindow):
         box_layout.addLayout(row)
         add_centered_group(box)
 
-        actions_box = QGroupBox("Ligand actions")
+        actions_box = QGroupBox()
+        self._tr("s2_grp_actions", actions_box.setTitle)
         actions_layout = QGridLayout(actions_box)
         action_button_width = 255
         ligand_actions = [
-            ("Split multimodel files", lambda: self._run_ligand_tool("split_multimodel")),
-            ("Split large folders", lambda: self._run_ligand_tool("split_large_folders")),
-            ("Generate SMI/CSV + Lipinski", lambda: self._run_ligand_tool("generate_lipinski")),
-            ("Apply druggability filter", lambda: self._run_ligand_tool("druggability_filter")),
-            ("Move empty files", lambda: self._run_ligand_tool("move_empty")),
-            ("Convert ligands to PDBQT", lambda: self._run_ligand_tool("convert_pdbqt")),
-            ("Reject invalid PDBQT", lambda: self._run_ligand_tool("reject_pdbqt")),
-            ("Recover failed ligands", lambda: self._run_ligand_tool("recover_pdbqt")),
-            ("Fix macrocycles for GPU", lambda: self._run_ligand_tool("fix_macrocycles")),
+            ("s2_act_split_multimodel", lambda: self._run_ligand_tool("split_multimodel")),
+            ("s2_act_split_large_folders", lambda: self._run_ligand_tool("split_large_folders")),
+            ("s2_act_generate_lipinski", lambda: self._run_ligand_tool("generate_lipinski")),
+            ("s2_act_druggability_filter", lambda: self._run_ligand_tool("druggability_filter")),
+            ("s2_act_move_empty", lambda: self._run_ligand_tool("move_empty")),
+            ("s2_act_convert_pdbqt", lambda: self._run_ligand_tool("convert_pdbqt")),
+            ("s2_act_reject_pdbqt", lambda: self._run_ligand_tool("reject_pdbqt")),
+            ("s2_act_recover_pdbqt", lambda: self._run_ligand_tool("recover_pdbqt")),
+            ("s2_act_fix_macrocycles", lambda: self._run_ligand_tool("fix_macrocycles")),
         ]
-        for idx, (label, handler) in enumerate(ligand_actions):
-            button = QPushButton(label)
+        for idx, (label_key, handler) in enumerate(ligand_actions):
+            button = QPushButton()
+            self._tr(label_key, button.setText)
             button.setFixedWidth(action_button_width)
             button.clicked.connect(handler)
             actions_layout.addWidget(button, idx // 3, idx % 3)
@@ -2465,13 +2552,14 @@ class MainWindow(QMainWindow):
         add_centered_group(self.txt_ligand_log)
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(1, 3))
-        self.tabs.addTab(tab, "STEP 2")
+        step2_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_step2", lambda txt, i=step2_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_ligand_summary()
 
     def _build_targets_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("Step 3. Prepare Targets"))
+        layout.addWidget(self._title("title_step3"))
 
         targets_group_width = 1000
         target_field_width = 320
@@ -2486,7 +2574,8 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
-        target_box = QGroupBox("Prepare receptor target")
+        target_box = QGroupBox()
+        self._tr("s3_grp_prepare_target", target_box.setTitle)
         target_form = QFormLayout(target_box)
         target_form.setHorizontalSpacing(18)
         target_form.setVerticalSpacing(14)
@@ -2497,11 +2586,12 @@ class MainWindow(QMainWindow):
 
         self.ed_target_name = QLineEdit()
         self.ed_target_name.setFixedWidth(target_field_width)
-        self.ed_target_name.setPlaceholderText("Optional target folder name")
+        self._tr("s3_ph_target_name", self.ed_target_name.setPlaceholderText)
 
         self.ed_target_file = QLineEdit()
         self.ed_target_file.setFixedWidth(target_field_width)
-        btn_choose_target = QPushButton("Select target file")
+        btn_choose_target = QPushButton()
+        self._tr("s3_btn_choose_target", btn_choose_target.setText)
         btn_choose_target.setFixedWidth(target_button_width)
         btn_choose_target.clicked.connect(self._choose_target_file)
         row_target = QHBoxLayout()
@@ -2525,7 +2615,8 @@ class MainWindow(QMainWindow):
 
         self.ed_target_rigid_file = QLineEdit()
         self.ed_target_rigid_file.setFixedWidth(target_field_width)
-        btn_choose_rigid = QPushButton("Select protein_rigid.pdbqt")
+        btn_choose_rigid = QPushButton()
+        self._tr("s3_btn_choose_rigid", btn_choose_rigid.setText)
         btn_choose_rigid.setFixedWidth(target_button_width)
         btn_choose_rigid.clicked.connect(lambda: self._choose_pdbqt_file(self.ed_target_rigid_file, "Select rigid receptor PDBQT"))
         row_rigid = QHBoxLayout()
@@ -2538,7 +2629,8 @@ class MainWindow(QMainWindow):
 
         self.ed_target_flex_file = QLineEdit()
         self.ed_target_flex_file.setFixedWidth(target_field_width)
-        btn_choose_flex = QPushButton("Select protein_flex.pdbqt")
+        btn_choose_flex = QPushButton()
+        self._tr("s3_btn_choose_flex", btn_choose_flex.setText)
         btn_choose_flex.setFixedWidth(target_button_width)
         btn_choose_flex.clicked.connect(lambda: self._choose_pdbqt_file(self.ed_target_flex_file, "Select flexible receptor PDBQT"))
         row_flex = QHBoxLayout()
@@ -2551,7 +2643,8 @@ class MainWindow(QMainWindow):
 
         self.ed_target_grid_file = QLineEdit()
         self.ed_target_grid_file.setFixedWidth(target_field_width)
-        btn_choose_grid = QPushButton("Select existing grid.txt")
+        btn_choose_grid = QPushButton()
+        self._tr("s3_btn_choose_grid", btn_choose_grid.setText)
         btn_choose_grid.setFixedWidth(target_button_width)
         btn_choose_grid.clicked.connect(lambda: self._choose_grid_file(self.ed_target_grid_file, "Select grid.txt (optional)"))
         row_grid = QHBoxLayout()
@@ -2575,47 +2668,62 @@ class MainWindow(QMainWindow):
         grid_params_grid.setHorizontalSpacing(18)
         grid_params_grid.setVerticalSpacing(14)
         grid_param_rows = [
-            ("Grid center X", self.sp_center_x, "Grid x size", self.sp_grid_x),
-            ("Grid center Y", self.sp_center_y, "Grid y size", self.sp_grid_y),
-            ("Grid center Z", self.sp_center_z, "Grid z size", self.sp_grid_z),
+            ("s3_lbl_grid_center_x", self.sp_center_x, "s3_lbl_grid_x_size", self.sp_grid_x),
+            ("s3_lbl_grid_center_y", self.sp_center_y, "s3_lbl_grid_y_size", self.sp_grid_y),
+            ("s3_lbl_grid_center_z", self.sp_center_z, "s3_lbl_grid_z_size", self.sp_grid_z),
         ]
-        for row_idx, (label_left, widget_left, label_right, widget_right) in enumerate(grid_param_rows):
-            grid_params_grid.addWidget(QLabel(label_left), row_idx, 0)
+        for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(grid_param_rows):
+            label_left_widget = QLabel(); self._tr(key_left, label_left_widget.setText)
+            label_right_widget = QLabel(); self._tr(key_right, label_right_widget.setText)
+            grid_params_grid.addWidget(label_left_widget, row_idx, 0)
             grid_params_grid.addWidget(widget_left, row_idx, 1)
-            grid_params_grid.addWidget(QLabel(label_right), row_idx, 2)
+            grid_params_grid.addWidget(label_right_widget, row_idx, 2)
             grid_params_grid.addWidget(widget_right, row_idx, 3)
         grid_params_grid.setColumnStretch(4, 1)
         grid_params_widget = QWidget()
         grid_params_widget.setLayout(grid_params_grid)
 
-        target_form.addRow("Preparation mode", self.cb_target_mode)
-        target_form.addRow("Target name", self.ed_target_name)
-        target_form.addRow("Target file", wrap_target)
-        target_form.addRow("Protonation pH", self.sp_target_ph)
-        target_form.addRow("Rigid receptor", wrap_rigid)
-        target_form.addRow("Flexible receptor", wrap_flex)
-        target_form.addRow("Existing grid", wrap_grid)
+        lbl_prep_mode = QLabel(); self._tr("s3_lbl_prep_mode", lbl_prep_mode.setText)
+        target_form.addRow(lbl_prep_mode, self.cb_target_mode)
+        lbl_target_name = QLabel(); self._tr("s3_lbl_target_name", lbl_target_name.setText)
+        target_form.addRow(lbl_target_name, self.ed_target_name)
+        lbl_target_file = QLabel(); self._tr("s3_lbl_target_file", lbl_target_file.setText)
+        target_form.addRow(lbl_target_file, wrap_target)
+        lbl_protonation_ph = QLabel(); self._tr("s3_lbl_protonation_ph", lbl_protonation_ph.setText)
+        target_form.addRow(lbl_protonation_ph, self.sp_target_ph)
+        lbl_rigid_receptor = QLabel(); self._tr("s3_lbl_rigid_receptor", lbl_rigid_receptor.setText)
+        target_form.addRow(lbl_rigid_receptor, wrap_rigid)
+        lbl_flex_receptor = QLabel(); self._tr("s3_lbl_flex_receptor", lbl_flex_receptor.setText)
+        target_form.addRow(lbl_flex_receptor, wrap_flex)
+        lbl_existing_grid = QLabel(); self._tr("s3_lbl_existing_grid", lbl_existing_grid.setText)
+        target_form.addRow(lbl_existing_grid, wrap_grid)
         target_form.addRow(grid_params_widget)
-        target_form.addRow("Grid spacing", self.sp_spacing)
+        lbl_grid_spacing = QLabel(); self._tr("s3_lbl_grid_spacing", lbl_grid_spacing.setText)
+        target_form.addRow(lbl_grid_spacing, self.sp_spacing)
 
-        btn_prepare = QPushButton("Prepare target")
+        btn_prepare = QPushButton()
+        self._tr("s3_btn_prepare_target", btn_prepare.setText)
         btn_prepare.setFixedWidth(180)
         btn_prepare.clicked.connect(self.prepare_target)
         target_form.addRow("", btn_prepare)
         add_centered_group(target_box)
 
-        manage_box = QGroupBox("Prepared targets")
+        manage_box = QGroupBox()
+        self._tr("s3_grp_prepared_targets", manage_box.setTitle)
         manage_layout = QVBoxLayout(manage_box)
         manage_row = QHBoxLayout()
         self.cb_prepared_targets = QComboBox()
         self.cb_prepared_targets.setMaximumWidth(200)
-        btn_refresh_targets = QPushButton("Refresh target list")
+        btn_refresh_targets = QPushButton()
+        self._tr("s3_btn_refresh_targets", btn_refresh_targets.setText)
         btn_refresh_targets.setFixedWidth(170)
         btn_refresh_targets.clicked.connect(self._populate_prepared_targets)
-        btn_open_target = QPushButton("Open target folder")
+        btn_open_target = QPushButton()
+        self._tr("s3_btn_open_target", btn_open_target.setText)
         btn_open_target.setFixedWidth(170)
         btn_open_target.clicked.connect(self._open_selected_target_folder)
-        btn_remove_target = QPushButton("Remove target")
+        btn_remove_target = QPushButton()
+        self._tr("s3_btn_remove_target", btn_remove_target.setText)
         btn_remove_target.setFixedWidth(170)
         btn_remove_target.clicked.connect(self._remove_selected_target)
         manage_row.addWidget(self.cb_prepared_targets)
@@ -2631,7 +2739,8 @@ class MainWindow(QMainWindow):
         add_centered_group(self.txt_targets)
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(2, 4))
-        self.tabs.addTab(tab, "STEP 3")
+        step3_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_step3", lambda txt, i=step3_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_targets_summary()
         self._populate_prepared_targets()
         self._toggle_target_mode()
@@ -2639,7 +2748,7 @@ class MainWindow(QMainWindow):
     def _build_docking_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("Step 4. Run Molecular Docking"))
+        layout.addWidget(self._title("title_step4"))
 
         docking_group_width = 1000
 
@@ -2652,13 +2761,15 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
-        monitor_group = QGroupBox("Docking monitor")
+        monitor_group = QGroupBox()
+        self._tr("s4_grp_monitor", monitor_group.setTitle)
         monitor_group.setMinimumWidth(480)
         monitor_group.setMaximumWidth(480)
         monitor_layout = QVBoxLayout(monitor_group)
 
         interval_row = QHBoxLayout()
-        interval_row.addWidget(QLabel("Update interval"))
+        lbl_update_interval = QLabel(); self._tr("s4_lbl_update_interval", lbl_update_interval.setText)
+        interval_row.addWidget(lbl_update_interval)
         self.cb_monitor_interval = QComboBox()
         for seconds in (1, 2, 5, 10, 15, 30, 60):
             self.cb_monitor_interval.addItem(f"{seconds} s", seconds)
@@ -2675,15 +2786,22 @@ class MainWindow(QMainWindow):
         self.lbl_monitor_eta = QLabel("-")
         self.lbl_monitor_running_time = QLabel("-")
         self.lbl_monitor_completion = QLabel("-")
-        monitor_form.addRow("Ligands docked", self.lbl_monitor_docked)
-        monitor_form.addRow("Total ligands", self.lbl_monitor_total)
-        monitor_form.addRow("Percent complete", self.lbl_monitor_percent)
-        monitor_form.addRow("ETA", self.lbl_monitor_eta)
-        monitor_form.addRow("Running time", self.lbl_monitor_running_time)
-        monitor_form.addRow("Estim. completion", self.lbl_monitor_completion)
+        lbl_docked = QLabel(); self._tr("s4_lbl_docked", lbl_docked.setText)
+        monitor_form.addRow(lbl_docked, self.lbl_monitor_docked)
+        lbl_total = QLabel(); self._tr("s4_lbl_total", lbl_total.setText)
+        monitor_form.addRow(lbl_total, self.lbl_monitor_total)
+        lbl_percent = QLabel(); self._tr("s4_lbl_percent", lbl_percent.setText)
+        monitor_form.addRow(lbl_percent, self.lbl_monitor_percent)
+        lbl_eta = QLabel(); self._tr("s4_lbl_eta", lbl_eta.setText)
+        monitor_form.addRow(lbl_eta, self.lbl_monitor_eta)
+        lbl_running_time = QLabel(); self._tr("s4_lbl_running_time", lbl_running_time.setText)
+        monitor_form.addRow(lbl_running_time, self.lbl_monitor_running_time)
+        lbl_completion = QLabel(); self._tr("s4_lbl_completion", lbl_completion.setText)
+        monitor_form.addRow(lbl_completion, self.lbl_monitor_completion)
         monitor_layout.addLayout(monitor_form)
 
-        btn_run = QPushButton("Run docking")
+        btn_run = QPushButton()
+        self._tr("s4_btn_run_docking", btn_run.setText)
         btn_run.setFixedWidth(180)
         btn_run.clicked.connect(self.run_docking)
         monitor_layout.addWidget(btn_run, alignment=Qt.AlignCenter)
@@ -2702,13 +2820,14 @@ class MainWindow(QMainWindow):
         add_centered_group(self.txt_docking_log)
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(3, 5))
-        self.tabs.addTab(tab, "STEP 4")
+        step4_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_step4", lambda txt, i=step4_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_result_folders()
 
     def _build_results_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("Step 5. View Results"))
+        layout.addWidget(self._title("title_step5"))
 
         results_group_width = 1000
 
@@ -2721,15 +2840,19 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
-        filters_box = QGroupBox("Result filters")
+        filters_box = QGroupBox()
+        self._tr("s5_grp_filters", filters_box.setTitle)
         filters_form = QFormLayout(filters_box)
         self.sp_result_top_n = QSpinBox(); self.sp_result_top_n.setRange(1, 100000)
         self.sp_result_rmsd = QDoubleSpinBox(); self.sp_result_rmsd.setRange(0.0, 1000.0); self.sp_result_rmsd.setDecimals(4)
-        filters_form.addRow("Top ligands", self.sp_result_top_n)
-        filters_form.addRow("RMSD threshold", self.sp_result_rmsd)
+        lbl_top_ligands = QLabel(); self._tr("s5_lbl_top_ligands", lbl_top_ligands.setText)
+        filters_form.addRow(lbl_top_ligands, self.sp_result_top_n)
+        lbl_rmsd_threshold = QLabel(); self._tr("s5_lbl_rmsd_threshold", lbl_rmsd_threshold.setText)
+        filters_form.addRow(lbl_rmsd_threshold, self.sp_result_rmsd)
         add_centered_group(filters_box)
 
-        controls_box = QGroupBox("Result controls")
+        controls_box = QGroupBox()
+        self._tr("s5_grp_controls", controls_box.setTitle)
         controls_layout = QVBoxLayout(controls_box)
         selectors_row = QHBoxLayout()
         self.cb_results_folder = QComboBox()
@@ -2740,22 +2863,28 @@ class MainWindow(QMainWindow):
         self.cb_results_databank.setMaximumWidth(260)
         self.cb_results_folder.currentTextChanged.connect(self._refresh_result_targets)
         self.cb_results_folder.currentTextChanged.connect(self._refresh_result_databanks)
-        btn_refresh = QPushButton("Refresh")
+        btn_refresh = QPushButton()
+        self._tr("s5_btn_refresh", btn_refresh.setText)
         btn_refresh.setFixedWidth(255)
         btn_refresh.clicked.connect(self._refresh_result_folders)
-        btn_open = QPushButton("Open result folder")
+        btn_open = QPushButton()
+        self._tr("s5_btn_open_result_folder", btn_open.setText)
         btn_open.setFixedWidth(255)
         btn_open.clicked.connect(self._open_current_result_folder)
-        btn_load = QPushButton("Load raw CSV")
+        btn_load = QPushButton()
+        self._tr("s5_btn_load_raw_csv", btn_load.setText)
         btn_load.setFixedWidth(255)
         btn_load.clicked.connect(self.preview_selected_result)
-        btn_filtered = QPushButton("Load filtered top results")
+        btn_filtered = QPushButton()
+        self._tr("s5_btn_load_filtered", btn_filtered.setText)
         btn_filtered.setFixedWidth(255)
         btn_filtered.clicked.connect(self.preview_filtered_result)
-        btn_export = QPushButton("Export CSV")
+        btn_export = QPushButton()
+        self._tr("s5_btn_export_csv", btn_export.setText)
         btn_export.setFixedWidth(255)
         btn_export.clicked.connect(self.export_filtered_result)
-        btn_plot = QPushButton("Plot filtered results")
+        btn_plot = QPushButton()
+        self._tr("s5_btn_plot_filtered", btn_plot.setText)
         btn_plot.setFixedWidth(255)
         btn_plot.clicked.connect(self.plot_filtered_result)
         selectors_row.addStretch(1)
@@ -2786,14 +2915,16 @@ class MainWindow(QMainWindow):
         self.tbl_results.setFixedHeight(500)
         add_centered_group(self.tbl_results)
 
-        btn_report = QPushButton("Generate Final Report")
+        btn_report = QPushButton()
+        self._tr("s5_btn_generate_report", btn_report.setText)
         btn_report.setFixedWidth(255)
         btn_report.clicked.connect(self.generate_final_report)
         layout.addWidget(btn_report, alignment=Qt.AlignCenter)
 
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(4, None))
-        self.tabs.addTab(tab, "STEP 5")
+        step5_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_step5", lambda txt, i=step5_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_result_folders()
 
     def _path_row(self, editor: QLineEdit, callback) -> QWidget:
@@ -2801,7 +2932,8 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(editor)
-        button = QPushButton("Browse")
+        button = QPushButton()
+        self._tr("btn_browse", button.setText)
         button.clicked.connect(callback)
         layout.addWidget(button)
         return widget
@@ -3890,6 +4022,38 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(self._mon_widget)
         layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(6)
+
+        # Bandeiras BR/UK de selecao de idioma (mesmo padrao do CODRUG, MODULES/i18n.py) - ao
+        # lado do monitor de CPU/GPU, no canto superior direito da janela principal. Usa icones
+        # SVG proprios (ICONS/flag_br.svg, ICONS/flag_gb.svg) em vez de emoji de bandeira: em
+        # muitos ambientes Linux/Qt o emoji de bandeira (par de "Regional Indicator Symbols") nao
+        # tem glifo colorido combinado disponivel na fonte do sistema e cai no fallback textual
+        # (as duas letras do codigo do pais), em vez de desenhar a bandeira.
+        flag_style = (
+            "QPushButton{border:none;background:transparent;padding:0;}"
+            "QPushButton:hover{background:#16283B;border-radius:4px;}"
+        )
+        flag_icon_size = QSize(24, 16)
+
+        self.btn_bandeira_pt = QPushButton()
+        self.btn_bandeira_pt.setIcon(QIcon(os.path.join(self.app_dir, "ICONS", "flag_br.svg")))
+        self.btn_bandeira_pt.setIconSize(flag_icon_size)
+        self.btn_bandeira_pt.setFlat(True)
+        self.btn_bandeira_pt.setFixedSize(30, 22)
+        self.btn_bandeira_pt.setStyleSheet(flag_style)
+        self._tr("tooltip_bandeira_pt", self.btn_bandeira_pt.setToolTip)
+        self.btn_bandeira_pt.clicked.connect(lambda: self._definir_idioma("pt"))
+        layout.addWidget(self.btn_bandeira_pt)
+
+        self.btn_bandeira_en = QPushButton()
+        self.btn_bandeira_en.setIcon(QIcon(os.path.join(self.app_dir, "ICONS", "flag_gb.svg")))
+        self.btn_bandeira_en.setIconSize(flag_icon_size)
+        self.btn_bandeira_en.setFlat(True)
+        self.btn_bandeira_en.setFixedSize(30, 22)
+        self.btn_bandeira_en.setStyleSheet(flag_style)
+        self._tr("tooltip_bandeira_en", self.btn_bandeira_en.setToolTip)
+        self.btn_bandeira_en.clicked.connect(lambda: self._definir_idioma("en"))
+        layout.addWidget(self.btn_bandeira_en)
 
         self.lbl_cpu_top = QLabel("CPU: --", self)
         self.lbl_cpu_top.setAlignment(Qt.AlignCenter)
