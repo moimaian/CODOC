@@ -134,7 +134,13 @@ from PyQt5.QtWidgets import (
 )
 
 from MODULES.module_requirements import RequirementsInstaller, detect_hardware, detect_opencl_devices, get_boost_version, get_vina_gpu_version, venv_paths
-from MODULES.module_target_prepare import TargetPrepareError, find_pdb2pqr, prepare_receptor_with_protonation, summarize_pka_table
+from MODULES.module_target_prepare import (
+    TargetPrepareError,
+    detect_pockets_p2rank,
+    find_pdb2pqr,
+    prepare_receptor_with_protonation,
+    summarize_pka_table,
+)
 from MODULES.module_report import generate_final_report as _generate_final_report_docx, load_job_settings
 from MODULES.splash_screen import SplashScreen
 from MODULES import i18n
@@ -432,18 +438,18 @@ class DockingWorker(QThread):
         # run_type == "NEW", or an existing job's folder to resume into for run_type == "RESTART".
         # No further per-run subfolder is created here anymore.
         os.makedirs(self.results_dir, exist_ok=True)
-        for target_dir in sorted(Path(self.targets_dir).glob("*/")):
+        for target_dir in sorted(p for p in Path(self.targets_dir).glob("*/") if p.is_dir()):
             os.makedirs(os.path.join(self.results_dir, target_dir.name), exist_ok=True)
         return self.results_dir
 
     def _build_pending_jobs(self, result_folder: str) -> list[dict[str, str]]:
         jobs: list[dict[str, str]] = []
-        for target_path in sorted(Path(self.targets_dir).glob("*/")):
+        for target_path in sorted(p for p in Path(self.targets_dir).glob("*/") if p.is_dir()):
             target_name = target_path.name
             target_requirements = self._target_requirements(target_path)
             result_target_dir = os.path.join(result_folder, target_name)
             os.makedirs(result_target_dir, exist_ok=True)
-            for lig_group in sorted(Path(self.ligands_dir).glob("*/")):
+            for lig_group in sorted(p for p in Path(self.ligands_dir).glob("*/") if p.is_dir()):
                 lig_group_name = lig_group.name
                 lig_result_group_dir = os.path.join(result_target_dir, lig_group_name)
                 os.makedirs(lig_result_group_dir, exist_ok=True)
@@ -2697,6 +2703,14 @@ class MainWindow(QMainWindow):
         target_form.addRow(lbl_flex_receptor, wrap_flex)
         lbl_existing_grid = QLabel(); self._tr("s3_lbl_existing_grid", lbl_existing_grid.setText)
         target_form.addRow(lbl_existing_grid, wrap_grid)
+
+        btn_detect_pocket = QPushButton()
+        self._tr("s3_btn_detect_pocket", btn_detect_pocket.setText)
+        self._tr("s3_tooltip_detect_pocket", btn_detect_pocket.setToolTip)
+        btn_detect_pocket.setFixedWidth(target_button_width)
+        btn_detect_pocket.clicked.connect(self.detect_pocket_p2rank)
+        target_form.addRow("", btn_detect_pocket)
+
         target_form.addRow(grid_params_widget)
         lbl_grid_spacing = QLabel(); self._tr("s3_lbl_grid_spacing", lbl_grid_spacing.setText)
         target_form.addRow(lbl_grid_spacing, self.sp_spacing)
@@ -3049,6 +3063,8 @@ class MainWindow(QMainWindow):
         ligand_count = 0
         if os.path.isdir(self.ligands_dir):
             for group in Path(self.ligands_dir).glob("*/"):
+                if not group.is_dir():
+                    continue
                 group_count += 1
                 ligand_count += len(list(group.glob("*.pdbqt")))
         conversion_summary = self.conversion_results_dir or "No job selected yet - click 'Save settings' in Step 1."
@@ -3203,7 +3219,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_targets_summary(self) -> None:
         lines = []
-        for target in sorted(Path(self.targets_dir).glob("*/")):
+        for target in sorted(p for p in Path(self.targets_dir).glob("*/") if p.is_dir()):
             markers = []
             if (target / "protein.pdbqt").is_file():
                 markers.append("rigid")
@@ -3363,6 +3379,44 @@ class MainWindow(QMainWindow):
         self._populate_prepared_targets()
         self._refresh_result_folders()
 
+    def detect_pocket_p2rank(self) -> None:
+        """Run a P2Rank heuristic pocket search on the currently selected target structure
+        and fill Grid center X/Y/Z with the top-ranked pocket's coordinates."""
+        flexible_mode = self.cb_target_mode.currentIndex() == 1 if hasattr(self, "cb_target_mode") else False
+        structure_path = self.ed_target_rigid_file.text().strip() if flexible_mode else self.ed_target_file.text().strip()
+        if not structure_path or not os.path.isfile(structure_path):
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                "Select a valid protein_rigid.pdbqt file first." if flexible_mode else "Select a valid target file first.",
+            )
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            pockets = detect_pockets_p2rank(structure_path, search_root=self.app_dir)
+        except Exception as exc:
+            QMessageBox.critical(self, APP_NAME, f"P2Rank heuristic search failed:\n{exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        best = pockets[0]
+        center_x, center_y, center_z = best.center
+        self.sp_center_x.setValue(center_x)
+        self.sp_center_y.setValue(center_y)
+        self.sp_center_z.setValue(center_z)
+
+        probability_text = f", probability {best.probability:.2f}" if best.probability is not None else ""
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"P2Rank found {len(pockets)} pocket(s) in {os.path.basename(structure_path)}.\n\n"
+            f"Using the top-ranked pocket '{best.name}' "
+            f"(score {best.score:.2f}{probability_text}, {best.n_residues} residue(s)):\n"
+            f"Grid center = ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})",
+        )
+
     def _copy_if_different(self, src: str, dst: str) -> None:
         """Merge into an existing target folder instead of crashing when the selected source
         file already is the destination file (e.g. Target name matches the folder the picked
@@ -3413,12 +3467,8 @@ class MainWindow(QMainWindow):
                 self.cb_existing_result.addItems(folders)
                 if self.current_job_name in folders:
                     self.cb_existing_result.setCurrentText(self.current_job_name)
-            elif self.current_job_name:
-                # NEW: just display the job the user is currently working in (read-only, since
-                # the combo is disabled outside RESTART) - no other JOBS folders are offered.
-                self.cb_existing_result.addItem(self.current_job_name)
-                self.cb_existing_result.setCurrentText(self.current_job_name)
-            # else: no active job yet, leave the combo empty.
+            # NEW: Result name stays blank - it only names a job to restart into, and NEW
+            # always creates a fresh JOBS/<...> folder regardless of what this combo shows.
         if hasattr(self, "cb_results_folder"):
             self.cb_results_folder.clear()
             self.cb_results_folder.addItems(folders)
@@ -3650,6 +3700,22 @@ class MainWindow(QMainWindow):
         if seconds and self.monitor_timer.isActive():
             self.monitor_timer.setInterval(int(seconds) * 1000)
 
+    def _clear_docking_monitor_log(self) -> None:
+        """Remove any leftover progress file from a previous run before starting a new one.
+
+        Without this, _refresh_docking_monitor() would read the stale file left behind by the
+        last run on its first tick (the new Vina-GPU process needs a moment before it writes
+        fresh progress) and briefly show that old run's numbers - e.g. 100% complete - as if the
+        docking that was just started had already finished."""
+        for path in (
+            os.path.join(self.app_dir, ".track_progress.log"),
+            os.path.join(self.app_dir, ".track_progress"),
+        ):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
     def _reset_docking_monitor(self) -> None:
         for label in (
             self.lbl_monitor_docked,
@@ -3706,6 +3772,7 @@ class MainWindow(QMainWindow):
         self.pb_docking.setValue(0)
         self.txt_docking_log.clear()
         self._reset_docking_monitor()
+        self._clear_docking_monitor_log()
         self.worker = DockingWorker(
             app_dir=self.app_dir,
             ligands_dir=self.ligands_dir,

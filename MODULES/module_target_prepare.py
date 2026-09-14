@@ -17,6 +17,7 @@ own.
 
 from __future__ import annotations
 
+import csv
 import os
 import re
 import shutil
@@ -24,7 +25,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 PDB2PQR_FORCEFIELD = "AMBER"
 
@@ -258,3 +259,156 @@ def prepare_receptor_with_protonation(
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Heuristic pocket search (P2Rank)
+# ---------------------------------------------------------------------------
+
+P2RANK_INSTALL_HINT = (
+    "P2Rank was not found. To install it:\n"
+    "  sudo apt install openjdk-17-jre-headless\n"
+    "  wget https://github.com/rdk/p2rank/releases/download/2.5.1/p2rank_2.5.1.tar.gz\n"
+    "  tar -xzf p2rank_2.5.1.tar.gz -C ~/\n"
+    "Then export P2RANK_HOME=~/p2rank_2.5.1 or add its folder to PATH.\n"
+    "P2Rank requires Java 17 or newer."
+)
+
+
+@dataclass
+class Pocket:
+    rank: int
+    name: str
+    score: float
+    probability: Optional[float]
+    center: Tuple[float, float, float]
+    n_residues: int
+
+
+def find_p2rank(search_root: Optional[str] = None) -> Optional[str]:
+    """Locate the P2Rank ``prank`` launcher script.
+
+    Search order: the ``P2RANK_HOME`` environment variable, PATH,
+    ``<search_root>/BIN/p2rank*/prank`` (CODOC's own BIN folder, when a
+    search_root is given) and finally the user's home directory and /opt --
+    the two most common places a manual P2Rank install ends up in.
+    """
+    env_home = os.environ.get("P2RANK_HOME")
+    if env_home:
+        candidate = Path(env_home) / "prank"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    found = _which_or_none("prank")
+    if found:
+        return found
+
+    search_bases = []
+    if search_root:
+        search_bases.append(Path(search_root) / "BIN")
+    search_bases.extend([Path.home(), Path("/opt")])
+    for base in search_bases:
+        if not base.is_dir():
+            continue
+        try:
+            for candidate in sorted(base.glob("p2rank*/prank")):
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def detect_pockets_p2rank(
+    structure_path: str,
+    search_root: Optional[str] = None,
+    max_pockets: int = 10,
+) -> List[Pocket]:
+    """Predict ligand-binding pockets with P2Rank, ranked by score.
+
+    P2Rank (Krivak & Hoksza, 2018; MIT license) scores solvent-accessible
+    surface points for ligandability and clusters the highest-scoring ones
+    into pockets. It needs neither a co-crystallized ligand nor a homologous
+    structure, which makes it a reasonable heuristic to seed the docking
+    grid center when the target has no bound ligand to derive it from.
+
+    ``structure_path`` may be any format STEP 3 accepts as a target file
+    (.pdb, .pdbqt, .mol2, .ent) -- it is normalized to a plain PDB with the
+    same Open Babel conversion used before protonation, since P2Rank picks
+    its parser from the file extension and does not recognize .pdbqt/.mol2.
+
+    Raises TargetPrepareError (with install instructions) if the ``prank``
+    binary cannot be found, or if P2Rank runs but reports no pocket at all --
+    deliberately, instead of silently falling back to some other guess.
+
+    Returns pockets sorted by rank (best first): each has .center (x, y, z).
+    """
+    if not os.path.isfile(structure_path):
+        raise TargetPrepareError(f"Target file not found: {structure_path}")
+
+    prank = find_p2rank(search_root)
+    if prank is None:
+        raise TargetPrepareError(P2RANK_INSTALL_HINT)
+
+    work_dir = tempfile.mkdtemp(prefix="codoc_p2rank_")
+    try:
+        pdb_for_p2rank = _normalize_to_pdb(structure_path, work_dir)
+        # P2Rank picks its parser from the file extension - make sure it is
+        # exactly ".pdb" even when _normalize_to_pdb returned the original
+        # path unchanged under a recognized-but-different suffix (".ent").
+        if Path(pdb_for_p2rank).suffix.lower() != ".pdb":
+            renamed = os.path.join(work_dir, "input.pdb")
+            shutil.copyfile(pdb_for_p2rank, renamed)
+            pdb_for_p2rank = renamed
+
+        out_dir = os.path.join(work_dir, "p2rank_out")
+        result = _run([prank, "predict", "-f", pdb_for_p2rank, "-o", out_dir])
+        if result.returncode != 0:
+            tail = "\n".join((result.stdout or "").strip().splitlines()[-6:])
+            raise TargetPrepareError(
+                f"P2Rank failed (exit code {result.returncode}):\n{tail}\n\n"
+                "If the error mentions a class file version or "
+                "UnsupportedClassVersionError, the installed Java is older than 17."
+            )
+
+        predictions = sorted(Path(out_dir).glob("*_predictions.csv"))
+        if not predictions:
+            raise TargetPrepareError(
+                f"P2Rank finished without producing a *_predictions.csv file in {out_dir}. "
+                "Check that the structure has a readable protein chain."
+            )
+
+        pockets: List[Pocket] = []
+        with open(predictions[0], newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                # P2Rank's CSV header has leading spaces in the column names.
+                record = {(key or "").strip(): (value or "").strip() for key, value in row.items()}
+                try:
+                    probability = record.get("probability")
+                    pockets.append(
+                        Pocket(
+                            rank=int(record.get("rank") or len(pockets) + 1),
+                            name=record.get("name") or f"pocket{len(pockets) + 1}",
+                            score=float(record["score"]),
+                            probability=float(probability) if probability else None,
+                            center=(
+                                float(record["center_x"]),
+                                float(record["center_y"]),
+                                float(record["center_z"]),
+                            ),
+                            n_residues=len([r for r in (record.get("residue_ids") or "").split() if r]),
+                        )
+                    )
+                except (KeyError, ValueError):
+                    continue
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    if not pockets:
+        raise TargetPrepareError(
+            "P2Rank did not find any pocket in this structure. "
+            "Enter the grid center coordinates manually."
+        )
+
+    pockets.sort(key=lambda pocket: pocket.rank)
+    return pockets[:max_pockets]

@@ -225,6 +225,14 @@ _TEXTOS = {
     "s3_btn_choose_rigid": {"en": "Select protein_rigid.pdbqt", "pt": "Selecionar protein_rigid.pdbqt"},
     "s3_btn_choose_flex": {"en": "Select protein_flex.pdbqt", "pt": "Selecionar protein_flex.pdbqt"},
     "s3_btn_choose_grid": {"en": "Select existing grid.txt", "pt": "Selecionar grid.txt existente"},
+    "s3_btn_detect_pocket": {"en": "Detect pocket (P2Rank)", "pt": "Detectar bolso (P2Rank)"},
+    "s3_tooltip_detect_pocket": {
+        "en": "Runs a heuristic pocket search with P2Rank on the selected target structure "
+              "and fills the Grid center X/Y/Z fields with the top-ranked pocket's coordinates.",
+        "pt": "Executa uma busca heurística de bolso com o P2Rank na estrutura do alvo "
+              "selecionada e preenche os campos Grid center X/Y/Z com as coordenadas do "
+              "bolso mais bem ranqueado.",
+    },
     "s3_btn_prepare_target": {"en": "Prepare target", "pt": "Preparar alvo"},
     "s3_btn_refresh_targets": {"en": "Refresh target list", "pt": "Atualizar lista de alvos"},
     "s3_btn_open_target": {"en": "Open target folder", "pt": "Abrir pasta do alvo"},
