@@ -4276,6 +4276,11 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    # Ties the running window to the CODOC.desktop launcher (StartupWMClass=CODOC there matches
+    # this) so the panel/window-list picks up the same icon as the menu entry, instead of relying
+    # only on setWindowIcon() below - matters most on Wayland, where WM_CLASS-based icon lookup
+    # from a bare X11 icon hint is unreliable.
+    app.setDesktopFileName("CODOC")
     dp_dir = os.path.abspath(os.path.dirname(__file__))
     splash = SplashScreen(dp_dir)
     splash.show()

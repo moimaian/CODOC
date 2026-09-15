@@ -30,34 +30,57 @@ ESSENTIALS = [
 ]
 
 
+def _icon_path(dp_dir: str) -> str:
+    return os.path.join(dp_dir, "ICONS", "logo_codocP.png")
+
+
 def _write_desktop(dp_dir: str) -> None:
     os.makedirs(DESKTOP_DIR, exist_ok=True)
-    icon_path = os.path.join(dp_dir, "ICONS", "logo_codocP.png")
+    icon_path = _icon_path(dp_dir)
     exec_path = os.path.join(dp_dir, "CODOC.py")
     content = f"""[Desktop Entry]
-Version=2026.1
+Version=1.0
 Name={APP_NAME}
 Comment=Python and PyQt5 CODOC interface
 Exec=bash -i -c \"env PYTHONNOUSERSITE=1 '{VENV_PY}' '{exec_path}'\"
 Icon={icon_path}
 Terminal=true
 Type=Application
-Categories=Qt;Science;Chemistry;Education;
+Categories=Qt;Science;Chemistry;
 StartupNotify=false
+StartupWMClass={APP_NAME}
 """
     with open(DESKTOP_FILE, "w", encoding="utf-8") as handle:
         handle.write(content)
     os.chmod(DESKTOP_FILE, 0o755)
 
 
+def _desktop_icon_line(content: str) -> "str | None":
+    for line in content.splitlines():
+        if line.startswith("Icon="):
+            return line[len("Icon="):].strip()
+    return None
+
+
 def ensure_desktop(dp_dir: str) -> None:
+    """(Re)writes ~/.local/share/applications/CODOC.desktop when it is missing OR stale.
+
+    Only checking the Exec path (as this used to do) meant that once the file existed with a
+    matching Exec line, it was never touched again - so when the app's logo files moved from
+    MIDIA/ to ICONS/ at some point, every existing installation kept pointing Icon= at the old,
+    now-missing MIDIA/logo_codocP.png forever, and the launcher/menu/panel silently showed no
+    icon at all for CODOC. Re-checking that the *current* Icon= target still exists on disk lets
+    this self-heal on the next launch instead of requiring a manual desktop-file edit."""
     try:
         if not os.path.isfile(DESKTOP_FILE):
             _write_desktop(dp_dir)
-        else:
-            content = Path(DESKTOP_FILE).read_text(encoding="utf-8")
-            if exec_path_token(dp_dir) not in content:
-                _write_desktop(dp_dir)
+            return
+        content = Path(DESKTOP_FILE).read_text(encoding="utf-8")
+        stale_exec = exec_path_token(dp_dir) not in content
+        icon_line = _desktop_icon_line(content)
+        stale_icon = not icon_line or not os.path.isfile(icon_line)
+        if stale_exec or stale_icon:
+            _write_desktop(dp_dir)
     except Exception:
         pass
 
