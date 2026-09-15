@@ -30,6 +30,11 @@ except Exception:
     rdMolDraw2D = None
 
 try:
+    from MODULES import module_compound_names
+except Exception:
+    module_compound_names = None
+
+try:
     from docx import Document
     from docx.enum.table import WD_TABLE_ALIGNMENT
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -356,6 +361,11 @@ def _add_results_table(document: Any, target: str, databank: str, rows: list[dic
         cells = table.add_row().cells
         _set_cell_width(cells[0], col_widths[0])
         cells[0].paragraphs[0].add_run(row["ligand"])
+        # Common name (e.g. "ZINC000003875259" -> "Valsartan"), resolved by structure via
+        # PubChem (see MODULES/module_compound_names.py) - shown in parentheses on its own line
+        # below the ligand code, whatever databank it came from.
+        if row.get("name"):
+            cells[0].add_paragraph(f"({row['name']})")
         _set_cell_width(cells[1], col_widths[1])
         cells[1].paragraphs[0].add_run(row["smiles"])
         _set_cell_width(cells[2], col_widths[2])
@@ -541,14 +551,30 @@ def generate_final_report(
                 continue
             subset = subset.sort_values(by="BINDING ENERGY (Kcal/mol)", ascending=True).head(top_results)
             report(f"Building table for {target} / {databank} ({len(subset)} ligand(s))...")
+            records = subset.to_dict("records")
+
+            # Common name per ligand (e.g. "ZINC000003875259" -> "Valsartan"), matched by
+            # structure via PubChem - see MODULES/module_compound_names.py. Always resolved by
+            # SMILES, so it works the same whatever databank this group's ligands came from.
+            name_lookup: dict[str, Optional[str]] = {}
+            if module_compound_names is not None and records:
+                id_to_smiles = {str(record["LIGAND"]): str(record["SMILES"]) for record in records}
+                try:
+                    name_lookup = module_compound_names.resolve_compound_names(
+                        list(id_to_smiles.keys()), docking_dir, id_to_smiles=id_to_smiles,
+                    )
+                except Exception:
+                    name_lookup = {}
+
             rows = [
                 {
                     "ligand": str(record["LIGAND"]),
                     "smiles": str(record["SMILES"]),
                     "energy": f"{record['BINDING ENERGY (Kcal/mol)']:.2f}",
                     "rmsd": f"{record['RMSD (mean)']:.3f}",
+                    "name": name_lookup.get(str(record["LIGAND"])) or "",
                 }
-                for record in subset.to_dict("records")
+                for record in records
             ]
             _add_results_table(document, target, databank, rows)
 

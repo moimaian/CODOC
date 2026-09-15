@@ -102,6 +102,11 @@ try:
 except Exception:
     dimorphite_dl = None
 
+try:
+    from MODULES import module_compound_names
+except Exception:
+    module_compound_names = None
+
 from PyQt5.QtCore import QSettings, QSize, QThread, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QGuiApplication, QIcon, QPixmap
 from PyQt5.QtWidgets import (
@@ -3467,8 +3472,14 @@ class MainWindow(QMainWindow):
                 self.cb_existing_result.addItems(folders)
                 if self.current_job_name in folders:
                     self.cb_existing_result.setCurrentText(self.current_job_name)
-            # NEW: Result name stays blank - it only names a job to restart into, and NEW
-            # always creates a fresh JOBS/<...> folder regardless of what this combo shows.
+            elif self.current_job_name:
+                # NEW: read-only display (the combo is disabled outside RESTART) of whichever
+                # job is currently active - blank until "Save settings" creates one (NEW always
+                # makes a fresh JOBS/<...> folder, it never reuses this name), then shows that
+                # freshly created job's name so it is clear which folder was just made.
+                self.cb_existing_result.addItem(self.current_job_name)
+                self.cb_existing_result.setCurrentText(self.current_job_name)
+            # else: no active job yet, leave the combo empty.
         if hasattr(self, "cb_results_folder"):
             self.cb_results_folder.clear()
             self.cb_results_folder.addItems(folders)
@@ -4045,7 +4056,36 @@ class MainWindow(QMainWindow):
         filtered[rmsd_col] = pd.to_numeric(filtered[rmsd_col], errors="coerce")
         filtered = filtered[filtered[rmsd_col] < self.result_view_settings.rmsd_limit]
         filtered = filtered.sort_values(by=energy_col, ascending=True).head(self.result_view_settings.top_results)
-        return filtered.reset_index(drop=True), result_name, target_name
+        filtered = filtered.reset_index(drop=True)
+        filtered = self._add_compound_name_column(filtered, result_name)
+        return filtered, result_name, target_name
+
+    def _add_compound_name_column(self, frame: Any, result_name: str) -> Any:
+        """Adds a "COMPOUND NAME" column resolved by structure (SMILES) via PubChem - see
+        MODULES/module_compound_names.py. This always matches by SMILES, never by the ligand
+        ID's own namespace, so it works the same regardless of which ligand databank a compound
+        came from (ZINC, ChEMBL, a custom folder, ...). Best-effort: silently leaves the column
+        blank if module_compound_names/RDKit is unavailable, or a compound has no PubChem match -
+        a missing name must never block loading or exporting the filtered results."""
+        columns = self._locate_result_columns(frame)
+        ligand_col, smiles_col = columns["ligand"], columns["smiles"]
+        if module_compound_names is None or pd is None or ligand_col is None or smiles_col is None or frame.empty:
+            frame["COMPOUND NAME"] = ""
+            return frame
+        id_to_smiles = dict(zip(frame[ligand_col].astype(str), frame[smiles_col].astype(str)))
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            names = module_compound_names.resolve_compound_names(
+                list(frame[ligand_col].astype(str)),
+                self._job_docking_dir(result_name),
+                id_to_smiles=id_to_smiles,
+            )
+        except Exception:
+            names = {}
+        finally:
+            QApplication.restoreOverrideCursor()
+        frame["COMPOUND NAME"] = frame[ligand_col].astype(str).map(names).fillna("")
+        return frame
 
     def _load_result_dataframe(self, csv_path: str) -> Any:
         if pd is None:
