@@ -37,7 +37,7 @@ import sys
 import tempfile
 import webbrowser
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields as dataclass_fields
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -177,6 +177,9 @@ QGroupBox::title {
 QLabel {
     background: transparent;
 }
+QLabel:disabled {
+    color: #4A5A66;
+}
 QLineEdit, QComboBox, QPlainTextEdit, QTextEdit, QTableWidget, QSpinBox, QDoubleSpinBox {
     border: 1px solid #2A4A6B;
     border-radius: 4px;
@@ -187,6 +190,11 @@ QLineEdit, QComboBox, QPlainTextEdit, QTextEdit, QTableWidget, QSpinBox, QDouble
 }
 QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus, QTableWidget:focus {
     border: 2px solid #2ECC71;
+}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
+    background: #17222E;
+    color: #4A5A66;
+    border-color: #22374A;
 }
 QPushButton {
     background: #1A4A30;
@@ -316,10 +324,6 @@ class LigandSettings:
     rejected_elements: str = "nan|As|Bi|Si|B"
     conversion_engine: str = "RDKit"
     conversion_workers: int = max(1, os.cpu_count() or 1)
-    speed_first: str = "med"
-    speed_second: str = "slow"
-    timeout_first: int = max(10, 10 * max(1, os.cpu_count() or 1))
-    timeout_second: int = max(30, 30 * max(1, os.cpu_count() or 1))
     minimization_steps: int = 1500
     minimization_algorithm: str = "Conjugate Gradient"
     minimization_forcefield: str = "GAFF"
@@ -337,6 +341,15 @@ class LigandSettings:
 class ResultViewSettings:
     top_results: int = 20
     rmsd_limit: float = 2.0
+
+
+def _known_dataclass_kwargs(dataclass_type: type, data: dict[str, Any]) -> dict[str, Any]:
+    """Drops any key in `data` that isn't a current field of `dataclass_type`, so loading an
+    older .codoc_settings.json - saved before a field was removed (e.g. the old ligand-conversion
+    speed_first/speed_second/timeout_first/timeout_second knobs) - degrades to that field's
+    current default instead of TypeError'ing the whole settings load."""
+    valid_names = {field.name for field in dataclass_fields(dataclass_type)}
+    return {key: value for key, value in data.items() if key in valid_names}
 
 
 def _parse_vina_pose_data(output_file: str) -> tuple[str, str, str]:
@@ -2422,11 +2435,8 @@ class MainWindow(QMainWindow):
         self.sp_lig_max_folder = QSpinBox(); self.sp_lig_max_folder.setRange(1, 1000000)
         self.ed_lig_reject = QLineEdit()
         self.cb_lig_conversion_engine = QComboBox(); self.cb_lig_conversion_engine.addItems(["RDKit", "OpenBabel"])
+        self.cb_lig_conversion_engine.currentTextChanged.connect(self._sync_lig_conversion_settings_state)
         self.sp_lig_workers = QSpinBox(); self.sp_lig_workers.setRange(1, max(1, (os.cpu_count() or 1) * 4))
-        self.cb_lig_speed_first = QComboBox(); self.cb_lig_speed_first.addItems(["fastest", "fast", "med", "slow", "slowest", "dist"])
-        self.cb_lig_speed_second = QComboBox(); self.cb_lig_speed_second.addItems(["fastest", "fast", "med", "slow", "slowest", "dist"])
-        self.sp_lig_timeout_first = QSpinBox(); self.sp_lig_timeout_first.setRange(1, 1000000)
-        self.sp_lig_timeout_second = QSpinBox(); self.sp_lig_timeout_second.setRange(1, 1000000)
         self.sp_lig_steps = QSpinBox(); self.sp_lig_steps.setRange(1, 1000000)
         self.sp_lig_mw_min = QDoubleSpinBox(); self.sp_lig_mw_min.setRange(-10000.0, 10000.0); self.sp_lig_mw_min.setDecimals(3)
         self.sp_lig_mw_max = QDoubleSpinBox(); self.sp_lig_mw_max.setRange(-10000.0, 10000.0); self.sp_lig_mw_max.setDecimals(3)
@@ -2442,68 +2452,76 @@ class MainWindow(QMainWindow):
             "Local optimization algorithm used to minimize ligand geometry.\n"
             "Only affects the OpenBabel conversion engine. The RDKit engine (RDKit + Meeko +\n"
             "Dimorphite-DL, no OpenBabel involved) uses RDKit's own MMFF/UFF minimizer, which has\n"
-            "no user-selectable steepest-descent/conjugate-gradient switch."
+            "no user-selectable steepest-descent/conjugate-gradient switch - disabled here whenever\n"
+            "RDKit is the selected conversion engine."
         )
         self.cb_lig_min_forcefield = QComboBox()
         self.cb_lig_min_forcefield.addItems(["GAFF", "Ghemical", "MMFF94", "MMFF94s", "UFF"])
         self.cb_lig_min_forcefield.setToolTip(
             "Force field used to minimize ligand geometry.\n"
-            "Applied to OpenBabel's minimizer always. When the RDKit conversion engine is selected\n"
-            "and the force field is MMFF94, MMFF94s or UFF, it is used by RDKit's own conformer\n"
-            "optimization step instead (GAFF and Ghemical are OpenBabel-only force fields; the\n"
-            "RDKit engine falls back to MMFF94 if either is selected)."
+            "With OpenBabel selected as the conversion engine, it is applied by OpenBabel's own\n"
+            "minimizer. With RDKit selected, it is used by RDKit's own conformer optimization step\n"
+            "instead - GAFF and Ghemical are OpenBabel-only force fields, so they are left out of\n"
+            "this list whenever RDKit is the selected conversion engine."
+        )
+        self.ed_lig_reject.setToolTip(
+            "Regex of element symbols to reject during PDBQT validation (see 'Reject invalid\n"
+            "PDBQT'). Only used by the OpenBabel engine's validator - the RDKit engine validates\n"
+            "chemically instead (reconstructing the molecule and running RDKit's sanitizer), so\n"
+            "this field is disabled whenever RDKit is the selected conversion engine."
         )
 
-        lig_setting_boxes = [
+        # These 9 widgets stay in "Ligand preparation settings"; the 8 druggability/Lipinski
+        # ones below move to their own "Druggability Filter" group. Each group gets its own
+        # uniform width, sized to its own widest label/value, now that they are visually separate.
+        lig_prep_setting_boxes = [
             self.sp_lig_file_size, self.sp_lig_ph, self.sp_lig_max_folder,
             self.ed_lig_reject, self.cb_lig_conversion_engine, self.sp_lig_workers,
-            self.cb_lig_speed_first, self.cb_lig_speed_second,
-            self.sp_lig_timeout_first, self.sp_lig_timeout_second, self.sp_lig_steps,
+            self.sp_lig_steps, self.cb_lig_min_algorithm, self.cb_lig_min_forcefield,
+        ]
+        lig_prep_box_width = max(w.sizeHint().width() for w in lig_prep_setting_boxes)
+        for box_widget in lig_prep_setting_boxes:
+            box_widget.setFixedWidth(lig_prep_box_width)
+
+        lig_druggability_boxes = [
             self.sp_lig_mw_min, self.sp_lig_mw_max, self.sp_lig_logp_min, self.sp_lig_logp_max,
             self.sp_lig_rot, self.sp_lig_hd, self.sp_lig_ha, self.sp_lig_tpsa,
-            self.cb_lig_min_algorithm, self.cb_lig_min_forcefield,
         ]
-        lig_box_width = max(w.sizeHint().width() for w in lig_setting_boxes)
-        for box_widget in lig_setting_boxes:
-            box_widget.setFixedWidth(lig_box_width)
+        lig_druggability_box_width = max(w.sizeHint().width() for w in lig_druggability_boxes)
+        for box_widget in lig_druggability_boxes:
+            box_widget.setFixedWidth(lig_druggability_box_width)
 
-        # Column 1: conversion engine and minimization settings.
+        # (label i18n key) -> (label widget, field widget), so _sync_lig_conversion_settings_state
+        # can enable/disable a field together with its caption by key, whichever group it lives in.
+        self._lig_field_pairs: dict[str, tuple[QLabel, QWidget]] = {}
+
+        def add_field_row(target_form: QGridLayout, row_idx: int, label_col: int, label_key: str, widget: QWidget) -> None:
+            label_widget = QLabel(); self._tr(label_key, label_widget.setText)
+            target_form.addWidget(label_widget, row_idx, label_col)
+            target_form.addWidget(widget, row_idx, label_col + 1)
+            self._lig_field_pairs[label_key] = (label_widget, widget)
+
+        # 9 fields regrouped into 3 balanced columns of 3 rows each now that the druggability
+        # fields have their own group and the never-used speed/timeout fields are gone.
         column_1 = [
             ("s2_lbl_conversion_engine", self.cb_lig_conversion_engine),
             ("s2_lbl_max_folder", self.sp_lig_max_folder),
             ("s2_lbl_min_file_size", self.sp_lig_file_size),
+        ]
+        column_2 = [
             ("s2_lbl_workers", self.sp_lig_workers),
             ("s2_lbl_min_algorithm", self.cb_lig_min_algorithm),
             ("s2_lbl_min_forcefield", self.cb_lig_min_forcefield),
-            ("s2_lbl_min_steps", self.sp_lig_steps),
         ]
-        # Column 2: druggability filter thresholds.
-        column_2 = [
-            ("s2_lbl_mw_min", self.sp_lig_mw_min),
-            ("s2_lbl_mw_max", self.sp_lig_mw_max),
-            ("s2_lbl_logp_min", self.sp_lig_logp_min),
-            ("s2_lbl_logp_max", self.sp_lig_logp_max),
-            ("s2_lbl_hdonor_max", self.sp_lig_hd),
-            ("s2_lbl_hacceptor_max", self.sp_lig_ha),
-            ("s2_lbl_rot_max", self.sp_lig_rot),
-            ("s2_lbl_tpsa_max", self.sp_lig_tpsa),
-        ]
-        # Column 3: protonation, rejection and conversion pacing settings.
         column_3 = [
+            ("s2_lbl_min_steps", self.sp_lig_steps),
             ("s2_lbl_ph", self.sp_lig_ph),
             ("s2_lbl_rejected", self.ed_lig_reject),
-            ("s2_lbl_speed1", self.cb_lig_speed_first),
-            ("s2_lbl_speed2", self.cb_lig_speed_second),
-            ("s2_lbl_timeout1", self.sp_lig_timeout_first),
-            ("s2_lbl_timeout2", self.sp_lig_timeout_second),
         ]
         for column_idx, column in enumerate((column_1, column_2, column_3)):
             label_col = column_idx * 2
-            widget_col = label_col + 1
             for row_idx, (label_key, widget) in enumerate(column):
-                label_widget = QLabel(); self._tr(label_key, label_widget.setText)
-                settings_form.addWidget(label_widget, row_idx, label_col)
-                settings_form.addWidget(widget, row_idx, widget_col)
+                add_field_row(settings_form, row_idx, label_col, label_key, widget)
         box_layout.addLayout(settings_form)
 
         row = QHBoxLayout()
@@ -2529,31 +2547,61 @@ class MainWindow(QMainWindow):
         box_layout.addLayout(row)
         add_centered_group(box)
 
+        druggability_box = QGroupBox()
+        self._tr("s2_grp_druggability", druggability_box.setTitle)
+        druggability_form = QGridLayout(druggability_box)
+        druggability_rows = [
+            ("s2_lbl_mw_min", self.sp_lig_mw_min, "s2_lbl_mw_max", self.sp_lig_mw_max),
+            ("s2_lbl_logp_min", self.sp_lig_logp_min, "s2_lbl_logp_max", self.sp_lig_logp_max),
+            ("s2_lbl_hdonor_max", self.sp_lig_hd, "s2_lbl_hacceptor_max", self.sp_lig_ha),
+            ("s2_lbl_rot_max", self.sp_lig_rot, "s2_lbl_tpsa_max", self.sp_lig_tpsa),
+        ]
+        for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(druggability_rows):
+            add_field_row(druggability_form, row_idx, 0, key_left, widget_left)
+            add_field_row(druggability_form, row_idx, 2, key_right, widget_right)
+
+        btn_druggability_filter = QPushButton()
+        self._tr("s2_act_druggability_filter", btn_druggability_filter.setText)
+        btn_druggability_filter.setFixedWidth(255)
+        btn_druggability_filter.clicked.connect(lambda: self._run_ligand_tool("druggability_filter"))
+        druggability_form.addWidget(btn_druggability_filter, len(druggability_rows), 0, 1, 4, Qt.AlignCenter)
+        add_centered_group(druggability_box)
+
         actions_box = QGroupBox()
         self._tr("s2_grp_actions", actions_box.setTitle)
         actions_layout = QGridLayout(actions_box)
         action_button_width = 255
+        # (label key, handler, gray) - "gray" applies _SS_BTN_SECONDARY; the one exception left at
+        # its default green styling is Convert ligands to PDBQT, the main/primary action here.
         ligand_actions = [
-            ("s2_act_split_multimodel", lambda: self._run_ligand_tool("split_multimodel")),
-            ("s2_act_split_large_folders", lambda: self._run_ligand_tool("split_large_folders")),
-            ("s2_act_generate_lipinski", lambda: self._run_ligand_tool("generate_lipinski")),
-            ("s2_act_druggability_filter", lambda: self._run_ligand_tool("druggability_filter")),
-            ("s2_act_move_empty", lambda: self._run_ligand_tool("move_empty")),
-            ("s2_act_convert_pdbqt", lambda: self._run_ligand_tool("convert_pdbqt")),
-            ("s2_act_reject_pdbqt", lambda: self._run_ligand_tool("reject_pdbqt")),
-            ("s2_act_recover_pdbqt", lambda: self._run_ligand_tool("recover_pdbqt")),
-            ("s2_act_fix_macrocycles", lambda: self._run_ligand_tool("fix_macrocycles")),
+            ("s2_act_split_multimodel", lambda: self._run_ligand_tool("split_multimodel"), True),
+            ("s2_act_split_large_folders", lambda: self._run_ligand_tool("split_large_folders"), True),
+            ("s2_act_move_empty", lambda: self._run_ligand_tool("move_empty"), True),
+            ("s2_act_convert_pdbqt", lambda: self._run_ligand_tool("convert_pdbqt"), False),
+            ("s2_act_reject_pdbqt", lambda: self._run_ligand_tool("reject_pdbqt"), True),
+            ("s2_act_recover_pdbqt", lambda: self._run_ligand_tool("recover_pdbqt"), True),
+            ("s2_act_generate_lipinski", lambda: self._run_ligand_tool("generate_lipinski"), True),
+            ("s2_act_fix_macrocycles", lambda: self._run_ligand_tool("fix_macrocycles"), True),
         ]
-        for idx, (label_key, handler) in enumerate(ligand_actions):
+        for idx, (label_key, handler, is_gray) in enumerate(ligand_actions):
             button = QPushButton()
             self._tr(label_key, button.setText)
             button.setFixedWidth(action_button_width)
+            if is_gray:
+                button.setStyleSheet(_SS_BTN_SECONDARY)
             button.clicked.connect(handler)
             actions_layout.addWidget(button, idx // 3, idx % 3)
+            if label_key == "s2_act_fix_macrocycles":
+                self.btn_lig_fix_macrocycles = button
         actions_layout.setHorizontalSpacing(12)
         actions_layout.setVerticalSpacing(10)
         actions_layout.setAlignment(Qt.AlignCenter)
         add_centered_group(actions_box)
+
+        # "Fix macrocycles for GPU" only matters for a GPU docking run (Step 1 Processing type) -
+        # enabled/disabled in sync with that combo instead of being always-on regardless of it.
+        self.cb_processing_type.currentTextChanged.connect(self._sync_fix_macrocycles_button)
+        self._sync_fix_macrocycles_button()
 
         self.pb_ligand = QProgressBar()
         self.pb_ligand.setValue(0)
@@ -2565,6 +2613,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._nav_buttons_row(1, 3))
         step2_tab_index = self.tabs.addTab(tab, "")
         self._tr("tab_step2", lambda txt, i=step2_tab_index: self.tabs.setTabText(i, txt))
+        self._sync_lig_conversion_settings_state()
         self._refresh_ligand_summary()
 
     def _build_targets_tab(self) -> None:
@@ -3091,14 +3140,6 @@ class MainWindow(QMainWindow):
             self.ligand_settings.conversion_engine = self.cb_lig_conversion_engine.currentText().strip()
         if hasattr(self, "sp_lig_workers"):
             self.ligand_settings.conversion_workers = self.sp_lig_workers.value()
-        if hasattr(self, "cb_lig_speed_first"):
-            self.ligand_settings.speed_first = self.cb_lig_speed_first.currentText().strip()
-        if hasattr(self, "cb_lig_speed_second"):
-            self.ligand_settings.speed_second = self.cb_lig_speed_second.currentText().strip()
-        if hasattr(self, "sp_lig_timeout_first"):
-            self.ligand_settings.timeout_first = self.sp_lig_timeout_first.value()
-        if hasattr(self, "sp_lig_timeout_second"):
-            self.ligand_settings.timeout_second = self.sp_lig_timeout_second.value()
         if hasattr(self, "sp_lig_steps"):
             self.ligand_settings.minimization_steps = self.sp_lig_steps.value()
         if hasattr(self, "cb_lig_min_algorithm"):
@@ -3133,16 +3174,9 @@ class MainWindow(QMainWindow):
             self.ed_lig_reject.setText(self.ligand_settings.rejected_elements)
         if hasattr(self, "cb_lig_conversion_engine"):
             self.cb_lig_conversion_engine.setCurrentText(self.ligand_settings.conversion_engine)
+            self._sync_lig_conversion_settings_state()
         if hasattr(self, "sp_lig_workers"):
             self.sp_lig_workers.setValue(self.ligand_settings.conversion_workers)
-        if hasattr(self, "cb_lig_speed_first"):
-            self.cb_lig_speed_first.setCurrentText(self.ligand_settings.speed_first)
-        if hasattr(self, "cb_lig_speed_second"):
-            self.cb_lig_speed_second.setCurrentText(self.ligand_settings.speed_second)
-        if hasattr(self, "sp_lig_timeout_first"):
-            self.sp_lig_timeout_first.setValue(self.ligand_settings.timeout_first)
-        if hasattr(self, "sp_lig_timeout_second"):
-            self.sp_lig_timeout_second.setValue(self.ligand_settings.timeout_second)
         if hasattr(self, "sp_lig_steps"):
             self.sp_lig_steps.setValue(self.ligand_settings.minimization_steps)
         if hasattr(self, "cb_lig_min_algorithm"):
@@ -3460,6 +3494,47 @@ class MainWindow(QMainWindow):
         self.cb_docking_mode.setCurrentText(current_mode if current_mode in allowed_modes else "normal")
         self.cb_docking_mode.blockSignals(False)
 
+    # Fields in "Ligand preparation settings" that only the OpenBabel engine's conversion/
+    # validation code paths actually read (see _lig_convert_single_openbabel and
+    # _invalid_pdbqt_reason_heuristic) - grayed out whenever RDKit is selected instead.
+    _LIG_OPENBABEL_ONLY_FIELDS = ("s2_lbl_min_algorithm", "s2_lbl_rejected")
+
+    def _sync_lig_conversion_settings_state(self) -> None:
+        """Keeps "Ligand preparation settings" honest about which of its fields the selected
+        Conversion engine actually uses: repopulates Minimization force field (GAFF/Ghemical are
+        OpenBabel-only, so RDKit used to silently fall back to MMFF94 if one was picked instead of
+        just not offering them), and grays out (disabled, matching QSS's :disabled state) every
+        field the active engine's conversion code never reads."""
+        if not hasattr(self, "cb_lig_conversion_engine") or not hasattr(self, "cb_lig_min_forcefield"):
+            return
+        current_forcefield = self.cb_lig_min_forcefield.currentText().strip() or "MMFF94"
+        engine = self.cb_lig_conversion_engine.currentText().strip()
+        allowed_forcefields = (
+            ["MMFF94", "MMFF94s", "UFF"] if engine == "RDKit" else ["GAFF", "Ghemical", "MMFF94", "MMFF94s", "UFF"]
+        )
+        self.cb_lig_min_forcefield.blockSignals(True)
+        self.cb_lig_min_forcefield.clear()
+        self.cb_lig_min_forcefield.addItems(allowed_forcefields)
+        self.cb_lig_min_forcefield.setCurrentText(current_forcefield if current_forcefield in allowed_forcefields else "MMFF94")
+        self.cb_lig_min_forcefield.blockSignals(False)
+
+        field_pairs = getattr(self, "_lig_field_pairs", {})
+        openbabel_enabled = engine != "RDKit"
+        for key in self._LIG_OPENBABEL_ONLY_FIELDS:
+            pair = field_pairs.get(key)
+            if pair is None:
+                continue
+            label_widget, field_widget = pair
+            label_widget.setEnabled(openbabel_enabled)
+            field_widget.setEnabled(openbabel_enabled)
+
+    def _sync_fix_macrocycles_button(self) -> None:
+        """"Fix macrocycles for GPU" only matters when Step 1's Processing type is GPU (macrocycle
+        handling is a GPU-only Vina-GPU limitation) - grayed out/disabled otherwise."""
+        if not hasattr(self, "btn_lig_fix_macrocycles") or not hasattr(self, "cb_processing_type"):
+            return
+        self.btn_lig_fix_macrocycles.setEnabled(self.cb_processing_type.currentText().strip() == "GPU")
+
     def _refresh_result_folders(self) -> None:
         job_dirs = [path for path in Path(self.jobs_dir).glob("*/") if path.is_dir()]
         job_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
@@ -3574,6 +3649,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "cb_processing_type"):
             self.cb_processing_type.setCurrentText(self.settings.processing_type)
             self._toggle_docking_mode_options()
+            self._sync_fix_macrocycles_button()
         if hasattr(self, "cb_docking_mode"):
             self.cb_docking_mode.setCurrentText(self.settings.docking_mode)
         if hasattr(self, "cb_run_type"):
@@ -3686,9 +3762,9 @@ class MainWindow(QMainWindow):
             docking = payload.get("docking", {})
             ligand = payload.get("ligand", {})
             results_view = payload.get("results_view", {})
-            self.settings = DockingSettings(**{**asdict(self.settings), **docking})
-            self.ligand_settings = LigandSettings(**{**asdict(self.ligand_settings), **ligand})
-            self.result_view_settings = ResultViewSettings(**{**asdict(self.result_view_settings), **results_view})
+            self.settings = DockingSettings(**{**asdict(self.settings), **_known_dataclass_kwargs(DockingSettings, docking)})
+            self.ligand_settings = LigandSettings(**{**asdict(self.ligand_settings), **_known_dataclass_kwargs(LigandSettings, ligand)})
+            self.result_view_settings = ResultViewSettings(**{**asdict(self.result_view_settings), **_known_dataclass_kwargs(ResultViewSettings, results_view)})
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, f"Failed to load settings: {exc}")
 

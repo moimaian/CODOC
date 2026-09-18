@@ -168,6 +168,7 @@ _TEXTOS = {
 
     # ---------------------------------------------------------------- STEP 2 (Prepare Ligands)
     "s2_grp_prep_settings": {"en": "Ligand preparation settings", "pt": "Configurações de preparação dos ligantes"},
+    "s2_grp_druggability": {"en": "Druggability Filter", "pt": "Filtro de Drogabilidade"},
     "s2_grp_actions": {"en": "Ligand actions", "pt": "Ações dos ligantes"},
     "s2_lbl_conversion_engine": {"en": "Conversion engine", "pt": "Motor de conversão"},
     "s2_lbl_max_folder": {"en": "Max ligands/folder", "pt": "Máx. de ligantes/pasta"},
@@ -186,10 +187,6 @@ _TEXTOS = {
     "s2_lbl_tpsa_max": {"en": "TPSA máx.", "pt": "TPSA máx."},
     "s2_lbl_ph": {"en": "Protonation pH", "pt": "pH de protonação"},
     "s2_lbl_rejected": {"en": "Rejected Elements", "pt": "Elementos rejeitados"},
-    "s2_lbl_speed1": {"en": "1st speed", "pt": "1ª velocidade"},
-    "s2_lbl_speed2": {"en": "2nd speed", "pt": "2ª velocidade"},
-    "s2_lbl_timeout1": {"en": "1st Timeout (s)", "pt": "1º Timeout (s)"},
-    "s2_lbl_timeout2": {"en": "2nd Timeout (s)", "pt": "2º Timeout (s)"},
     "s2_btn_refresh_summary": {"en": "Refresh summary", "pt": "Atualizar resumo"},
     "s2_btn_open_ligands_folder": {"en": "Open ligands folder", "pt": "Abrir pasta de ligantes"},
     "s2_btn_save_lig_settings": {"en": "Save ligand settings", "pt": "Salvar configurações de ligantes"},
