@@ -230,6 +230,22 @@ _TEXTOS = {
               "selecionada e preenche os campos Grid center X/Y/Z com as coordenadas do "
               "bolso mais bem ranqueado.",
     },
+    "s3_lbl_cocrystal": {"en": "Co-crystal ligand", "pt": "Ligante cocristalizado"},
+    "s3_btn_find_ligands": {"en": "Find co-crystal ligands", "pt": "Buscar ligantes cocristalizados"},
+    "s3_tooltip_find_ligands": {
+        "en": "Lists the ligands already complexed in the selected PDB file (HETATM groups that are not water, ions or modified residues).",
+        "pt": "Lista os ligantes já complexados no arquivo PDB selecionado (grupos HETATM que não sejam água, íons ou resíduos modificados).",
+    },
+    "s3_btn_grid_from_ligand": {"en": "Grid from selected ligand", "pt": "Grid a partir do ligante"},
+    "s3_tooltip_grid_from_ligand": {
+        "en": "Centers the grid on the selected co-crystal ligand and sizes the box to enclose it (extent + 6 A per side, minimum 20 A).",
+        "pt": "Centraliza o grid no ligante cocristalizado selecionado e dimensiona a caixa para envolvê-lo (extensão + 6 A por lado, mínimo 20 A).",
+    },
+    "s3_btn_export_redock": {"en": "Export ligand for redocking", "pt": "Exportar ligante p/ redocking"},
+    "s3_tooltip_export_redock": {
+        "en": "Writes the selected co-crystal ligand to LIGANDS/REDOCK (prepared in STEP 2 like any other ligand) and keeps its crystal pose as the reference for 'Redocking RMSD' in STEP 5.",
+        "pt": "Grava o ligante cocristalizado selecionado em LIGANDS/REDOCK (preparado na ETAPA 2 como qualquer outro ligante) e guarda a pose cristalográfica como referência para o 'RMSD do redocking' na ETAPA 5.",
+    },
     "s3_btn_prepare_target": {"en": "Prepare target", "pt": "Preparar alvo"},
     "s3_btn_refresh_targets": {"en": "Refresh target list", "pt": "Atualizar lista de alvos"},
     "s3_btn_open_target": {"en": "Open target folder", "pt": "Abrir pasta do alvo"},
@@ -256,6 +272,11 @@ _TEXTOS = {
     "s5_btn_load_raw_csv": {"en": "Load raw CSV", "pt": "Carregar CSV bruto"},
     "s5_btn_load_filtered": {"en": "Load filtered top results", "pt": "Carregar melhores resultados filtrados"},
     "s5_btn_export_csv": {"en": "Export CSV", "pt": "Exportar CSV"},
+    "s5_btn_redock_rmsd": {"en": "Redocking RMSD", "pt": "RMSD do redocking"},
+    "s5_tooltip_redock_rmsd": {
+        "en": "Compares each docked REDOCK ligand with its crystal pose (heavy-atom, symmetry-aware RMSD, best pose and minimum over all poses). Success: <= 2.0 A.",
+        "pt": "Compara cada ligante REDOCK dockado com sua pose cristalográfica (RMSD de átomos pesados, com simetria; melhor pose e mínimo entre todas as poses). Sucesso: <= 2,0 A.",
+    },
     "s5_btn_plot_filtered": {"en": "Plot filtered results", "pt": "Plotar resultados filtrados"},
     "s5_btn_generate_report": {"en": "Generate Final Report", "pt": "Gerar relatório final"},
 }

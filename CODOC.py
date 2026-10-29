@@ -149,6 +149,7 @@ from MODULES.module_target_prepare import (
 from MODULES.module_report import generate_final_report as _generate_final_report_docx, load_job_settings
 from MODULES.splash_screen import SplashScreen
 from MODULES import i18n
+from MODULES import module_cocrystal
 
 APP_NAME = "CODOC"
 APP_DIR_NAME = "CODOC"
@@ -2765,6 +2766,45 @@ class MainWindow(QMainWindow):
         btn_detect_pocket.clicked.connect(self.detect_pocket_p2rank)
         target_form.addRow("", btn_detect_pocket)
 
+        # Redocking helpers: grid from a ligand already complexed in the PDB, and export of that
+        # ligand into LIGANDS/REDOCK (reference pose kept aside for the STEP 5 RMSD).
+        self.cb_cocrystal_ligand = QComboBox()
+        self.cb_cocrystal_ligand.setFixedWidth(target_field_width)
+        self._cocrystal_ligands: list = []
+        btn_find_ligands = QPushButton()
+        self._tr("s3_btn_find_ligands", btn_find_ligands.setText)
+        self._tr("s3_tooltip_find_ligands", btn_find_ligands.setToolTip)
+        btn_find_ligands.setFixedWidth(target_button_width)
+        btn_find_ligands.clicked.connect(self.find_cocrystal_ligands)
+        row_cocrystal = QHBoxLayout()
+        row_cocrystal.setContentsMargins(0, 0, 0, 0)
+        row_cocrystal.setSpacing(10)
+        row_cocrystal.addWidget(self.cb_cocrystal_ligand)
+        row_cocrystal.addWidget(btn_find_ligands)
+        row_cocrystal.addStretch(1)
+        wrap_cocrystal = QWidget(); wrap_cocrystal.setLayout(row_cocrystal)
+        lbl_cocrystal = QLabel(); self._tr("s3_lbl_cocrystal", lbl_cocrystal.setText)
+        target_form.addRow(lbl_cocrystal, wrap_cocrystal)
+
+        btn_grid_from_ligand = QPushButton()
+        self._tr("s3_btn_grid_from_ligand", btn_grid_from_ligand.setText)
+        self._tr("s3_tooltip_grid_from_ligand", btn_grid_from_ligand.setToolTip)
+        btn_grid_from_ligand.setFixedWidth(target_button_width)
+        btn_grid_from_ligand.clicked.connect(self.grid_from_cocrystal_ligand)
+        btn_export_redock = QPushButton()
+        self._tr("s3_btn_export_redock", btn_export_redock.setText)
+        self._tr("s3_tooltip_export_redock", btn_export_redock.setToolTip)
+        btn_export_redock.setFixedWidth(target_button_width)
+        btn_export_redock.clicked.connect(self.export_cocrystal_ligand_for_redocking)
+        row_redock_btns = QHBoxLayout()
+        row_redock_btns.setContentsMargins(0, 0, 0, 0)
+        row_redock_btns.setSpacing(10)
+        row_redock_btns.addWidget(btn_grid_from_ligand)
+        row_redock_btns.addWidget(btn_export_redock)
+        row_redock_btns.addStretch(1)
+        wrap_redock_btns = QWidget(); wrap_redock_btns.setLayout(row_redock_btns)
+        target_form.addRow("", wrap_redock_btns)
+
         target_form.addRow(grid_params_widget)
         lbl_grid_spacing = QLabel(); self._tr("s3_lbl_grid_spacing", lbl_grid_spacing.setText)
         target_form.addRow(lbl_grid_spacing, self.sp_spacing)
@@ -2966,6 +3006,11 @@ class MainWindow(QMainWindow):
         buttons_grid.setHorizontalSpacing(12)
         buttons_grid.setVerticalSpacing(10)
         buttons_grid.setAlignment(Qt.AlignCenter)
+        btn_redock = QPushButton()
+        self._tr("s5_btn_redock_rmsd", btn_redock.setText)
+        self._tr("s5_tooltip_redock_rmsd", btn_redock.setToolTip)
+        btn_redock.setFixedWidth(255)
+        btn_redock.clicked.connect(self.compute_redocking_rmsd)
         result_buttons = [
             btn_refresh,
             btn_open,
@@ -2973,6 +3018,7 @@ class MainWindow(QMainWindow):
             btn_filtered,
             btn_export,
             btn_plot,
+            btn_redock,
         ]
         for idx, button in enumerate(result_buttons):
             buttons_grid.addWidget(button, idx // 3, idx % 3)
@@ -3454,6 +3500,94 @@ class MainWindow(QMainWindow):
             f"Using the top-ranked pocket '{best.name}' "
             f"(score {best.score:.2f}{probability_text}, {best.n_residues} residue(s)):\n"
             f"Grid center = ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})",
+        )
+
+    def _cocrystal_source_path(self) -> str:
+        path = self.ed_target_file.text().strip()
+        if not path or not os.path.isfile(path):
+            QMessageBox.warning(
+                self, APP_NAME, "Select a valid PDB target file first (Rigid target mode) - the co-crystal ligand is read from it."
+            )
+            return ""
+        return path
+
+    def find_cocrystal_ligands(self) -> None:
+        """List the ligands already complexed in the selected PDB target (not water/ions/modified residues)."""
+        path = self._cocrystal_source_path()
+        if not path:
+            return
+        try:
+            ligands = module_cocrystal.find_cocrystal_ligands(path)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        self._cocrystal_ligands = ligands
+        self.cb_cocrystal_ligand.clear()
+        for ligand in ligands:
+            self.cb_cocrystal_ligand.addItem(ligand.label)
+        if not ligands:
+            QMessageBox.information(
+                self, APP_NAME, f"No co-crystallized ligand (HETATM other than water, ions or modified residues) was found in {os.path.basename(path)}."
+            )
+
+    def _selected_cocrystal_ligand(self) -> Optional[Any]:
+        index = self.cb_cocrystal_ligand.currentIndex()
+        if index < 0 or index >= len(self._cocrystal_ligands):
+            QMessageBox.warning(self, APP_NAME, "Click 'Find co-crystal ligands' and select a ligand first.")
+            return None
+        return self._cocrystal_ligands[index]
+
+    def grid_from_cocrystal_ligand(self) -> None:
+        """Center the grid on the selected co-crystal ligand and size the box to enclose it (+6 A per side, min 20 A)."""
+        ligand = self._selected_cocrystal_ligand()
+        if ligand is None:
+            return
+        (center_x, center_y, center_z), (size_x, size_y, size_z) = module_cocrystal.suggest_grid(ligand)
+        self.sp_center_x.setValue(center_x)
+        self.sp_center_y.setValue(center_y)
+        self.sp_center_z.setValue(center_z)
+        self.sp_grid_x.setValue(size_x)
+        self.sp_grid_y.setValue(size_y)
+        self.sp_grid_z.setValue(size_z)
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"Grid set from {ligand.label}:\n"
+            f"center = ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})\n"
+            f"size = {size_x} x {size_y} x {size_z} A (ligand extent + 6 A on each side, minimum 20 A).",
+        )
+
+    def export_cocrystal_ligand_for_redocking(self) -> None:
+        """Send the selected co-crystal ligand to LIGANDS/REDOCK (prepared by STEP 2) and keep its crystal pose as reference."""
+        ligand = self._selected_cocrystal_ligand()
+        if ligand is None:
+            return
+        path = self._cocrystal_source_path()
+        if not path:
+            return
+        target_name_input = self.ed_target_name.text().strip()
+        target_base = self._safe_target_name(target_name_input or Path(path).stem)
+        ligand_name = self._safe_target_name(f"{target_base}_{ligand.resname}_{ligand.chain}{ligand.resnum}")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            info = module_cocrystal.export_ligand_for_redocking(
+                ligand, ligand_name, target_base, self.ligands_dir, self.app_dir
+            )
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, APP_NAME, f"Could not export {ligand.label} for redocking:\n{exc}")
+            return
+        QApplication.restoreOverrideCursor()
+        self._refresh_ligand_summary()
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"{ligand.label} exported as '{ligand_name}'.\n\n"
+            f"Ligand file: {info['sdf_path']}\n"
+            f"Crystal pose (reference): {info['reference_path']}\n"
+            f"Bond orders from: {info['method']}\nSMILES: {info['smiles']}\n\n"
+            f"Next: prepare the target named '{target_base}' (Prepare target), convert the REDOCK group in STEP 2, "
+            "run the docking and use 'Redocking RMSD' in STEP 5. Note the REDOCK group is docked against every target in TARGETS.",
         )
 
     def _copy_if_different(self, src: str, dst: str) -> None:
@@ -4006,6 +4140,84 @@ class MainWindow(QMainWindow):
             return
         fig.savefig(file_path, bbox_inches="tight", dpi=300)
         QMessageBox.information(self, APP_NAME, f"Chart saved to {file_path}.")
+
+    def compute_redocking_rmsd(self) -> None:
+        """Compare every docked REDOCK ligand against its crystal pose (heavy-atom, symmetry-aware RMSD)."""
+        result_name = self.cb_results_folder.currentText().strip()
+        if not result_name:
+            QMessageBox.warning(self, APP_NAME, "Select a result folder first.")
+            return
+        docking_dir = Path(self._job_docking_dir(result_name))
+        if not docking_dir.is_dir():
+            QMessageBox.warning(self, APP_NAME, f"Result folder not found: {docking_dir}")
+            return
+        if pd is None:
+            QMessageBox.warning(self, APP_NAME, "Pandas is required to show the redocking results.")
+            return
+        target_filter = self.cb_results_target.currentText().strip()
+        databank_filter = self.cb_results_databank.currentText().strip()
+
+        rows = []
+        failures = []
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for target_dir in sorted(p for p in docking_dir.glob("*/") if p.is_dir()):
+                if target_filter and target_filter != "All targets" and target_dir.name != target_filter:
+                    continue
+                for group_dir in sorted(p for p in target_dir.glob("*/") if p.is_dir()):
+                    if databank_filter and databank_filter != "All ligands" and group_dir.name != databank_filter:
+                        continue
+                    for ligand_dir in sorted(p for p in group_dir.glob("*/") if p.is_dir()):
+                        info = module_cocrystal.load_reference_info(self.app_dir, ligand_dir.name)
+                        docked = ligand_dir / f"{ligand_dir.name}.pdbqt"
+                        # A reference only means something for the target it was exported for.
+                        if info is None or info.get("target") != target_dir.name or not docked.is_file():
+                            continue
+                        energy, _rmsd_mean, _smiles = _parse_vina_pose_data(str(docked))
+                        try:
+                            result = module_cocrystal.compute_redock_rmsd(info["reference_path"], str(docked))
+                        except Exception as exc:
+                            failures.append(f"{target_dir.name}/{ligand_dir.name}: {exc}")
+                            continue
+                        best = result["best_pose_rmsd"]
+                        rows.append({
+                            "TARGET": target_dir.name,
+                            "LIGAND DATABANK": group_dir.name,
+                            "LIGAND": ligand_dir.name,
+                            "BINDING ENERGY (Kcal/mol)": energy,
+                            "BEST-POSE RMSD (A)": round(best, 3),
+                            "MIN RMSD (A)": round(result["min_rmsd"], 3),
+                            "MIN-RMSD POSE": result["min_rmsd_pose"],
+                            "POSES": result["n_poses"],
+                            "REDOCKING": "success (<= 2.0 A)" if best <= 2.0 else "failed (> 2.0 A)",
+                        })
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not rows:
+            detail = ("\n\nProblems:\n" + "\n".join(failures)) if failures else ""
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "No redocking results were found in this job. Export a co-crystal ligand with 'Export ligand for redocking' "
+                "in STEP 3, prepare the target with the same name, convert the REDOCK group in STEP 2 and run the docking first."
+                + detail,
+            )
+            return
+        frame = pd.DataFrame(rows)
+        self._load_frame_into_table(frame)
+        csv_path = docking_dir / "redocking_rmsd.csv"
+        try:
+            frame.to_csv(csv_path, index=False)
+            saved = f"\nSaved to {csv_path}."
+        except OSError:
+            saved = ""
+        successes = int((frame["BEST-POSE RMSD (A)"] <= 2.0).sum())
+        message = f"Redocking RMSD computed for {len(rows)} ligand(s): {successes} with best pose <= 2.0 A.{saved}"
+        if failures:
+            message += "\n\nCould not compare:\n" + "\n".join(failures)
+        self.txt_docking_log.appendPlainText(message)
+        QMessageBox.information(self, APP_NAME, message)
 
     def generate_final_report(self) -> None:
         result_name = self.cb_results_folder.currentText().strip()
