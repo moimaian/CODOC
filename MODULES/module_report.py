@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Final results report generator for Step 5 (CODOC Results Report, .docx).
+"""Final results report generator for Step 4 (CODOC Results Report, .docx).
 
-Pulls its data from three kinds of sources, per job:
-  - the .json settings snapshots written next to a job's results (docking_settings.json,
-    ligand_settings.json);
-  - the actions.log written into a job's CONVERSION folder as Step 2 tools are run;
+Pulls its data from three kinds of sources, per project:
+  - the .json settings snapshots written inside a project (DOCKING/docking_settings.json,
+    CONVERSION/ligand_settings.json);
+  - the actions.log written into a project's CONVERSION folder as Step 1 tools are run;
   - the result folders themselves (ligand counts per CONVERSION_* subfolder, the rebuilt
     docking CSV for binding energies/RMSD/SMILES).
 
@@ -92,7 +92,7 @@ def _count_pdbqt(path: str) -> int:
 
 
 def read_completed_actions(conversion_dir: str) -> set[str]:
-    """Parse actions.log (written by CODOC.py each time a Step 2 tool finishes) into the
+    """Parse actions.log (written by CODOC.py each time a Step 1 tool finishes) into the
     set of operation keys that ran successfully for this job."""
     log_path = Path(conversion_dir) / "actions.log"
     if not log_path.is_file():
@@ -107,7 +107,7 @@ def read_completed_actions(conversion_dir: str) -> set[str]:
 
 def compute_databank_stats(ligands_dir: str, conversion_dir: str, databank_names: list[str]) -> dict[str, dict[str, int]]:
     """Reconstruct the ligand-preparation funnel per databank straight from the folders that
-    Step 2's tools actually populate - there is no single stored "initial count", so it is
+    Step 1's tools actually populate - there is no single stored "initial count", so it is
     rebuilt as final + everything that was shed along the way - recoveries added back."""
     stats: dict[str, dict[str, int]] = {}
     for name in databank_names:
@@ -131,11 +131,20 @@ def compute_databank_stats(ligands_dir: str, conversion_dir: str, databank_names
 
 
 def detect_databank_format(conversion_dir: str, ligands_dir: str, databank_name: str) -> str:
-    """Best-effort original file extension for a databank (e.g. ".mol2", ".smi"), read from
-    the archived originals if the conversion action ran, else from any leftover raw file."""
+    """Best-effort original file extension for a databank (e.g. ".mol2", ".smi"): the value recorded
+    in CONVERSION/databank_formats.json when the conversion ran, else the files still waiting in the
+    group folder, else (projects made before the CONVERSION/LIGANDS layout) the archived originals."""
+    recorded_path = Path(conversion_dir) / "databank_formats.json"
+    if recorded_path.is_file():
+        try:
+            recorded = json.loads(recorded_path.read_text(encoding="utf-8")).get(databank_name, "")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            recorded = ""
+        if recorded:
+            return str(recorded)
     for base in (
-        os.path.join(conversion_dir, "CONVERSION_ORIGINALS", databank_name),
         os.path.join(ligands_dir, databank_name),
+        os.path.join(conversion_dir, "CONVERSION_ORIGINALS", databank_name),
     ):
         directory = Path(base)
         if not directory.is_dir():
@@ -246,7 +255,7 @@ def _add_header(document: Any, job_name: str) -> None:
     date_part = parts[0] if len(parts) > 0 else job_name
     time_part = parts[1] if len(parts) > 1 else ""
     paragraph = document.add_paragraph()
-    for label, value in (("Date", date_part), ("Time", time_part), ("Job Name", job_name)):
+    for label, value in (("Date", date_part), ("Time", time_part), ("Project Name", job_name)):
         run = paragraph.add_run(f"{label}: ")
         run.bold = True
         paragraph.add_run(f"{value}     ")
@@ -285,7 +294,7 @@ def _add_druggability_parameters(document: Any, ligand: dict[str, Any]) -> None:
 
 
 def _add_conversion_actions(document: Any, completed_actions: set[str]) -> None:
-    _bar(document, "CONVERTION LIGANDS ACTIONS:", COLOR_SECTION_BAR)
+    _bar(document, "CONVERSION LIGAND ACTIONS:", COLOR_SECTION_BAR)
     for key, label in LIGAND_ACTION_LABELS:
         _field_line(document, label, "Yes" if key in completed_actions else "No")
 

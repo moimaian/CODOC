@@ -61,16 +61,7 @@ CODOC_PYTHON_DEFAULTS = {
 }
 
 CODOC_SYSTEM_DEFAULTS = {
-    "parallel": "parallel",
-    "gnuplot": "gnuplot",
     "openbabel": "openbabel",
-}
-
-SYSTEM_REQUIREMENTS = {
-    "build-essential": ["sudo", "apt-get", "install", "-y", "build-essential", "wget", "unzip", "cmake", "git"],
-    "parallel": ["sudo", "apt-get", "install", "-y", "parallel"],
-    "gnuplot": ["sudo", "apt-get", "install", "-y", "gnuplot"],
-    "openbabel": ["sudo", "apt-get", "install", "-y", "openbabel"],
 }
 
 VINA_VERSION = "1.2.5"
@@ -158,16 +149,16 @@ except Exception as exc:
 
 _SS_BTN_PRIMARY = """
 QPushButton {
-    background: #1A4A30;
-    color: #2ECC71;
+    background: #0F3A48;
+    color: #29B6D8;
     font-weight: bold;
-    border: 1px solid #2ECC71;
+    border: 1px solid #29B6D8;
     border-radius: 5px;
     padding: 6px 16px;
 }
-QPushButton:hover { background: #27AE60; color: #0D1B2A; }
-QPushButton:pressed { background: #1E8449; color: #FFF; }
-QPushButton:disabled { background: #1C2E20; color: #3D6B4A; border-color: #2A4A36; }
+QPushButton:hover { background: #1893B3; color: #0D1B2A; }
+QPushButton:pressed { background: #006680; color: #FFF; }
+QPushButton:disabled { background: #13262E; color: #3D7285; border-color: #2A4F5E; }
 """
 
 _SS_BTN_DANGER = """
@@ -291,6 +282,24 @@ def _os_release_text() -> str:
         return ""
 
 
+def _has_controlling_terminal() -> bool:
+    """True when sudo can ask for a password on a terminal. CODOC started from the menu has none
+    (its launcher is Terminal=false), so a plain `sudo` would just fail there."""
+    try:
+        with open("/dev/tty"):
+            return True
+    except OSError:
+        return False
+
+
+def root_command(command: list[str]) -> list[str]:
+    """Prefix for commands that need root: `sudo` on a terminal, otherwise `pkexec`, which asks for
+    the password in a graphical dialog."""
+    if not _has_controlling_terminal() and _which("pkexec"):
+        return ["pkexec"] + command
+    return ["sudo"] + command
+
+
 def _supports_apt_bootstrap() -> bool:
     return sys.platform == "linux" and bool(_which("apt-get")) and bool(_which("sudo"))
 
@@ -308,10 +317,10 @@ def _maybe_install_pyenv_build_deps() -> None:
     if not _supports_apt_bootstrap():
         return
     print(f"[{APP_NAME}] Installing system build dependencies for Python {TARGET_VENV_PYTHON} ...")
-    result = subprocess.run(["sudo", "apt-get", "update"])
+    result = subprocess.run(root_command(["apt-get", "update"]))
     if result.returncode != 0:
-        raise RuntimeError("Failed to run 'sudo apt-get update'.")
-    install_cmd = ["sudo", "apt-get", "install", "-y"] + PYENV_APT_BUILD_DEPS
+        raise RuntimeError("Failed to run 'apt-get update'.")
+    install_cmd = root_command(["apt-get", "install", "-y"] + PYENV_APT_BUILD_DEPS)
     result = subprocess.run(install_cmd)
     if result.returncode != 0:
         raise RuntimeError("Failed to install Python build dependencies.")
@@ -936,8 +945,6 @@ def detect_hardware() -> dict[str, Any]:
         "cpu_count": os.cpu_count() or 1,
         "gpu_available": bool(_which("nvidia-smi")),
         "openbabel": bool(_which("obabel")),
-        "parallel": bool(_which("parallel")),
-        "gnuplot": bool(_which("gnuplot")),
         "adfr": os.path.isfile(os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")),
     }
 
@@ -1096,7 +1103,7 @@ class RequirementsInstaller(cast(Any, QDialog)):
                 if not checkbox.isChecked():
                     continue
                 package_name = package_edit.text().strip() or name
-                command = ["sudo", "apt-get", "install", "-y", package_name]
+                command = root_command(["apt-get", "install", "-y", package_name])
                 self.log_signal.emit(f"Running: {' '.join(command)}\n")
                 result = _run(command)
                 if result.returncode != 0:

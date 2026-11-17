@@ -1,0 +1,17 @@
+# Instalado em /usr/share/lintian/overrides/codoc pelo build.sh.
+# Avisos do lintian que valem para o repositório oficial do Debian, mas não para
+# o CODOC, distribuído como pacote de terceiros (ver packaging/deb/README.md).
+
+# Software de terceiros, fora do repositório oficial: /opt é o lugar previsto
+# pela FHS (e o launcher /usr/bin/codoc sincroniza /opt/codoc -> $HOME/CODOC).
+codoc: dir-or-file-in-opt
+
+# Aplicação gráfica, aberta pelo menu; não há uma interface de linha de comando
+# a documentar em man page.
+codoc: no-manual-page
+
+# Binários oficiais do AutoDock Vina 1.2.5 (x86_64, estáticos, já distribuídos assim pelo
+# upstream) em /opt/codoc/BIN: por isso o pacote é amd64 e não "all"; não os recompilamos
+# nem os "stripamos" para manter exatamente o que o upstream publica.
+codoc: statically-linked-binary
+codoc: unstripped-binary-or-object

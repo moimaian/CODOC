@@ -94,7 +94,7 @@ def _normalize_to_pdb(input_path: str, work_dir: str) -> str:
     """Convert any receptor source format supported by CODOC into a plain PDB.
 
     PDB2PQR only reliably parses PDB/mmCIF, while target files selected in
-    STEP 3 may be .pdb, .pdbqt, .mol2 or .ent. Open Babel (already a CODOC
+    STEP 2 may be .pdb, .pdbqt, .mol2 or .ent. Open Babel (already a CODOC
     dependency) normalizes any of those into a clean PDB before protonation.
     """
     if Path(input_path).suffix.lower() in (".pdb", ".ent"):
@@ -332,7 +332,7 @@ def detect_pockets_p2rank(
     structure, which makes it a reasonable heuristic to seed the docking
     grid center when the target has no bound ligand to derive it from.
 
-    ``structure_path`` may be any format STEP 3 accepts as a target file
+    ``structure_path`` may be any format STEP 2 accepts as a target file
     (.pdb, .pdbqt, .mol2, .ent) -- it is normalized to a plain PDB with the
     same Open Babel conversion used before protonation, since P2Rank picks
     its parser from the file extension and does not recognize .pdbqt/.mol2.

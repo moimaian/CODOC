@@ -16,10 +16,10 @@ apps resolve names the same way. Design notes:
   form). Because this is always structure-based, it works identically regardless of which ligand
   databank (ZINC, ChEMBL, a custom folder, ...) a compound came from - there is nothing
   ZINC-specific about the lookup itself, only about the label it typically improves.
-- Results (including "no match found") are cached to a small JSON file next to the job's docking
+- Results (including "no match found") are cached to a small JSON file next to the project's docking
   results, keyed by InChIKey, so re-generating a report or re-loading filtered results never
   re-queries the same structure twice.
-- Every network/RDKit failure is swallowed - a missing name must never block STEP 5 or the final
+- Every network/RDKit failure is swallowed - a missing name must never block STEP 4 or the final
   report, it just means the compound is shown by its ID alone, as before.
 """
 
@@ -35,6 +35,7 @@ from typing import Any, Optional
 
 try:
     from rdkit import Chem
+    from rdkit.Chem.MolStandardize import rdMolStandardize
     _RDKIT_AVAILABLE = True
 except Exception:
     _RDKIT_AVAILABLE = False
@@ -116,6 +117,14 @@ def _title_by_connectivity(smiles: str) -> Optional[str]:
     return title.strip() if isinstance(title, str) and title.strip() else None
 
 
+def _neutral_mol(smiles: str) -> Any:
+    """RDKit molecule of `smiles` with its charges neutralized, or None if it is invalid. The results
+    carry the PROTONATED form that was docked ([NH+], C(=O)[O-]); PubChem registers compounds in
+    their neutral form, so every lookup (and its cache key) is made on the neutralized molecule."""
+    mol = Chem.MolFromSmiles(smiles)
+    return rdMolStandardize.Uncharger().uncharge(mol) if mol is not None else None
+
+
 def get_name_for_smiles(smiles: str, cache: dict[str, Any]) -> Optional[str]:
     """Returns a common/trade name for `smiles` (e.g. "Valsartan"), or None if RDKit is
     unavailable, the SMILES is invalid, or no PubChem match was found. `cache` is a plain dict
@@ -124,9 +133,10 @@ def get_name_for_smiles(smiles: str, cache: dict[str, Any]) -> Optional[str]:
     if not _RDKIT_AVAILABLE or not smiles:
         return None
     try:
-        mol = Chem.MolFromSmiles(smiles)
+        mol = _neutral_mol(smiles)
         if mol is None:
             return None
+        smiles = Chem.MolToSmiles(mol)
         inchikey = Chem.MolToInchiKey(mol)
     except Exception:
         return None
@@ -175,7 +185,7 @@ def resolve_compound_names(
         if fresh_lookups >= max_lookups:
             # Still honors an already-cached result even past the cap - only skips brand-new ones.
             try:
-                mol = Chem.MolFromSmiles(smi) if _RDKIT_AVAILABLE else None
+                mol = _neutral_mol(smi) if _RDKIT_AVAILABLE else None
                 key = Chem.MolToInchiKey(mol) if mol is not None else None
             except Exception:
                 key = None

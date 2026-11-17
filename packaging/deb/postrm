@@ -1,0 +1,29 @@
+#!/bin/sh
+# postrm do pacote codoc
+#
+# Da mesma forma que o postinst nunca escreve em $HOME, o postrm nunca
+# apaga nada em $HOME: $HOME/CODOC/PROJECTS guarda ligantes, alvos e resultados de docking gerados
+# pelo usuário (muitas vezes dezenas de GB) e $HOME/.venv/CODOC é um ambiente
+# virtual por-usuário. Um script de sistema (root) removendo isso de forma
+# automática — inclusive em "purge" — arriscaria apagar dados de trabalho de
+# qualquer usuário que já tenha logado na máquina, sem chance de confirmação.
+# Só avisamos.
+
+set -e
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+
+if [ "$1" = "purge" ]; then
+    cat <<'EOT' >&2
+codoc: o pacote foi removido, mas dados por-usuário NÃO foram apagados:
+  - Código copiado/resultados:  ~/CODOC  (inclui ~/CODOC/PROJECTS e ~/CODOC/BASE)
+  - Ambiente virtual Python:    ~/.venv/CODOC
+  - Atalho do menu do usuário:  ~/.local/share/applications/CODOC.desktop
+Remova manualmente esses itens, para cada usuário que os tenha, se
+quiser liberar o espaço.
+EOT
+fi
+
+exit 0

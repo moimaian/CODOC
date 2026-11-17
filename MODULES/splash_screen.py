@@ -13,6 +13,7 @@ from PyQt5.QtGui import QGuiApplication, QPixmap
 from PyQt5.QtWidgets import QApplication, QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from MODULES.module_requirements import ensure_venv, install_python_packages, venv_paths, PYTHON_PACKAGES
+from MODULES.projects import migrate_legacy_jobs_dir
 
 APP_NAME = "CODOC"
 APP_DIR_NAME = "CODOC"
@@ -34,59 +35,39 @@ def _icon_path(dp_dir: str) -> str:
     return os.path.join(dp_dir, "ICONS", "logo_codocP.png")
 
 
-def _write_desktop(dp_dir: str) -> None:
-    os.makedirs(DESKTOP_DIR, exist_ok=True)
-    icon_path = _icon_path(dp_dir)
-    exec_path = os.path.join(dp_dir, "CODOC.py")
-    content = f"""[Desktop Entry]
+def _desktop_content(dp_dir: str) -> str:
+    # Terminal=false: CODOC opens without a terminal window; Help > Terminal opens one on demand.
+    return f"""[Desktop Entry]
 Version=1.0
 Name={APP_NAME}
 Comment=Python and PyQt5 CODOC interface
-Exec=bash -i -c \"env PYTHONNOUSERSITE=1 '{VENV_PY}' '{exec_path}'\"
-Icon={icon_path}
-Terminal=true
+Exec=bash -i -c \"env PYTHONNOUSERSITE=1 '{VENV_PY}' '{os.path.join(dp_dir, "CODOC.py")}'\"
+Icon={_icon_path(dp_dir)}
+Terminal=false
 Type=Application
 Categories=Qt;Science;Chemistry;
 StartupNotify=false
 StartupWMClass={APP_NAME}
 """
+
+
+def _write_desktop(dp_dir: str) -> None:
+    os.makedirs(DESKTOP_DIR, exist_ok=True)
     with open(DESKTOP_FILE, "w", encoding="utf-8") as handle:
-        handle.write(content)
+        handle.write(_desktop_content(dp_dir))
     os.chmod(DESKTOP_FILE, 0o755)
 
 
-def _desktop_icon_line(content: str) -> "str | None":
-    for line in content.splitlines():
-        if line.startswith("Icon="):
-            return line[len("Icon="):].strip()
-    return None
-
-
 def ensure_desktop(dp_dir: str) -> None:
-    """(Re)writes ~/.local/share/applications/CODOC.desktop when it is missing OR stale.
-
-    Only checking the Exec path (as this used to do) meant that once the file existed with a
-    matching Exec line, it was never touched again - so when the app's logo files moved from
-    MIDIA/ to ICONS/ at some point, every existing installation kept pointing Icon= at the old,
-    now-missing MIDIA/logo_codocP.png forever, and the launcher/menu/panel silently showed no
-    icon at all for CODOC. Re-checking that the *current* Icon= target still exists on disk lets
-    this self-heal on the next launch instead of requiring a manual desktop-file edit."""
+    """(Re)writes ~/.local/share/applications/CODOC.desktop whenever it is missing or differs from
+    what this version expects (program path, icon - which moved from MIDIA/ to ICONS/ once - or
+    the Terminal= line), so existing installations heal themselves on the next launch instead of
+    needing a manual edit of the desktop file."""
     try:
-        if not os.path.isfile(DESKTOP_FILE):
-            _write_desktop(dp_dir)
-            return
-        content = Path(DESKTOP_FILE).read_text(encoding="utf-8")
-        stale_exec = exec_path_token(dp_dir) not in content
-        icon_line = _desktop_icon_line(content)
-        stale_icon = not icon_line or not os.path.isfile(icon_line)
-        if stale_exec or stale_icon:
+        if not os.path.isfile(DESKTOP_FILE) or Path(DESKTOP_FILE).read_text(encoding="utf-8") != _desktop_content(dp_dir):
             _write_desktop(dp_dir)
     except Exception:
         pass
-
-
-def exec_path_token(dp_dir: str) -> str:
-    return os.path.join(dp_dir, "CODOC.py")
 
 
 def install_minimal_essentials(callback=None) -> None:
@@ -162,7 +143,8 @@ class SplashScreen(QWidget):
         self.status["desktop_ok"] = True
         self._set_target(25)
 
-        for folder in ("JOBS", "MODULES", "TEST", "ICONS", "LIGANDS", "TARGETS", "BIN"):
+        migrate_legacy_jobs_dir(self.dp_dir)   # JOBS/ -> PROJECTS/ (older versions)
+        for folder in ("PROJECTS", "BASE", "MODULES", "TEST", "ICONS", "BIN"):
             os.makedirs(os.path.join(self.dp_dir, folder), exist_ok=True)
         self.status["folders_ok"] = True
         self._set_target(60)

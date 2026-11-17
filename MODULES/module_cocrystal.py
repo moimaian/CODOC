@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Co-crystallized ligand tools for redocking (STEP 3 / STEP 5).
+"""Co-crystallized ligand tools for redocking (STEP 2 / STEP 4).
 
 Three things a redocking study needs, all independent of PyQt:
   1. find the ligands already complexed in a PDB target (HETATM groups that are not water, ions
      or modified amino acids) and derive a docking grid (center + box size) from one of them;
-  2. export that ligand into CODOC's LIGANDS folder (group "REDOCK") so it goes through the
-     normal STEP 2 preparation, keeping the crystallographic pose aside as the reference;
+  2. export that ligand into the project's ligands folder (CONVERSION/LIGANDS, group "REDOCK") so
+     it goes through the normal STEP 1 preparation, keeping the crystallographic pose aside, in
+     the project's REDOCK_REFERENCE folder, as the reference;
   3. after docking, compare each docked pose against the reference pose (symmetry-aware,
      heavy-atom RMSD without re-alignment, since the receptor never moves).
 
@@ -41,7 +42,6 @@ except Exception:  # pragma: no cover
     AllChem = None
 
 REDOCK_GROUP = "REDOCK"
-REDOCK_REFERENCE_DIRNAME = "REDOCK_REFERENCE"
 RCSB_CHEMCOMP_URL = "https://data.rcsb.org/rest/v1/core/chemcomp/{code}"
 
 _WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "TIP", "TIP3", "SOL"}
@@ -51,6 +51,11 @@ _TWO_LETTER_ELEMENTS = {"CL", "BR", "FE", "ZN", "MG", "MN", "CU", "CO", "NI", "C
 
 class CocrystalError(RuntimeError):
     """Raised when a co-crystal ligand cannot be read, exported or compared."""
+
+
+class BondOrderError(CocrystalError):
+    """Bond orders of a crystal ligand could not be determined automatically (no RCSB template and
+    Open Babel's perception is not chemically valid) - the caller can ask the user for a SMILES."""
 
 
 @dataclass
@@ -137,7 +142,7 @@ def find_cocrystal_ligands(structure_path: str) -> List[CocrystalLigand]:
                     continue
                 if line[16] not in (" ", "A", "1"):
                     continue
-                resname = line[17:20].strip().upper()
+                resname = line[17:21].strip().upper()  # 4th char (col. 21) carries the extended 4-character ligand codes (e.g. A1JL)
                 if resname in _WATER_NAMES:
                     continue
                 try:
@@ -199,8 +204,36 @@ def _rcsb_template_smiles(resname: str) -> Optional[str]:
     return None
 
 
-def _mol_with_bond_orders(ligand: CocrystalLigand) -> Tuple[Any, str]:
-    """RDKit molecule (heavy atoms, crystal coordinates) with proper bond orders + method used."""
+def _assign_from_template(template_smiles: str, heavy: Any) -> Any:
+    template = Chem.MolFromSmiles(template_smiles)
+    if template is None:
+        raise CocrystalError(f"The SMILES '{template_smiles}' could not be parsed.")
+    # RDKit happily "assigns" a template that is smaller/different and only fixes part of the
+    # molecule, so require the same heavy atoms and bonds as the crystal ligand up front.
+    template_elements = sorted(atom.GetSymbol() for atom in template.GetAtoms())
+    ligand_elements = sorted(atom.GetSymbol() for atom in heavy.GetAtoms())
+    if template_elements != ligand_elements or template.GetNumBonds() != heavy.GetNumBonds():
+        raise CocrystalError(
+            f"The SMILES has {len(template_elements)} heavy atoms / {template.GetNumBonds()} bonds, but the "
+            f"crystal ligand has {len(ligand_elements)} heavy atoms / {heavy.GetNumBonds()} bonds "
+            "(different composition or connectivity)."
+        )
+    try:
+        fixed = AllChem.AssignBondOrdersFromTemplate(template, heavy)
+        Chem.SanitizeMol(fixed)
+    except Exception as exc:
+        raise CocrystalError(
+            f"The SMILES does not match the heavy-atom connectivity of the crystal ligand ({exc})."
+        ) from exc
+    return fixed
+
+
+def _mol_with_bond_orders(ligand: CocrystalLigand, template_smiles: Optional[str] = None) -> Tuple[Any, str]:
+    """RDKit molecule (heavy atoms, crystal coordinates) with proper bond orders + method used.
+
+    Order of attempts: SMILES typed by the user, RCSB chemical-component SMILES, Open Babel's
+    bond-order perception (accepted only if RDKit can sanitize the result). BondOrderError is
+    raised when none works, so the interface can ask the user for a SMILES."""
     if Chem is None:
         raise CocrystalError("RDKit is not available in the current environment.")
     block = ligand.pdb_block()
@@ -209,15 +242,14 @@ def _mol_with_bond_orders(ligand: CocrystalLigand) -> Tuple[Any, str]:
         raise CocrystalError(f"RDKit could not read the coordinates of ligand {ligand.label}.")
     heavy = Chem.RemoveHs(raw, sanitize=False)
 
+    if template_smiles:
+        return _assign_from_template(template_smiles, heavy), "SMILES typed by the user"
+
     smiles = _rcsb_template_smiles(ligand.resname)
     if smiles:
         try:
-            template = Chem.MolFromSmiles(smiles)
-            if template is not None:
-                fixed = AllChem.AssignBondOrdersFromTemplate(template, heavy)
-                Chem.SanitizeMol(fixed)
-                return fixed, "RCSB chemical-component template"
-        except Exception:
+            return _assign_from_template(smiles, heavy), "RCSB chemical-component template"
+        except CocrystalError:
             pass
 
     obabel = shutil.which("obabel")
@@ -231,27 +263,29 @@ def _mol_with_bond_orders(ligand: CocrystalLigand) -> Tuple[Any, str]:
                 [obabel, pdb_path, "-O", sdf_path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
             if os.path.isfile(sdf_path):
-                mol = Chem.MolFromMolFile(sdf_path, removeHs=False)
+                mol = Chem.MolFromMolFile(sdf_path, removeHs=False)  # sanitizes: None if invalid
                 if mol is not None:
                     return Chem.RemoveHs(mol), "Open Babel bond-order perception"
-    raise CocrystalError(
-        f"Could not determine bond orders for ligand {ligand.label}: no RCSB template was reachable "
-        "and Open Babel could not perceive a valid molecule from the crystal coordinates."
+    raise BondOrderError(
+        f"Could not determine bond orders for ligand {ligand.label}: it is not available in the RCSB "
+        "chemical-component dictionary and Open Babel could not perceive a valid molecule from the "
+        "crystal coordinates."
     )
 
 
-def reference_dir(app_dir: str) -> str:
-    return os.path.join(app_dir, REDOCK_REFERENCE_DIRNAME)
-
-
 def export_ligand_for_redocking(
-    ligand: CocrystalLigand, ligand_name: str, target_name: str, ligands_dir: str, app_dir: str
+    ligand: CocrystalLigand,
+    ligand_name: str,
+    target_name: str,
+    ligands_dir: str,
+    reference_dir: str,
+    template_smiles: Optional[str] = None,
 ) -> dict[str, str]:
-    """Write the ligand as <ligands_dir>/REDOCK/<ligand_name>.sdf (picked up by STEP 2) and keep the
-    crystallographic pose as <app_dir>/REDOCK_REFERENCE/<ligand_name>.pdb (+ .json naming the target
-    it belongs to), for the STEP 5 redocking RMSD. The reference lives outside TARGETS/ on purpose:
-    a TARGETS subfolder without grid.txt makes the docking run abort."""
-    mol, method = _mol_with_bond_orders(ligand)
+    """Write the ligand as <ligands_dir>/REDOCK/<ligand_name>.sdf (picked up by STEP 1) and keep the
+    crystallographic pose as <reference_dir>/<ligand_name>.pdb (+ .json naming the target it belongs
+    to), for the STEP 4 redocking RMSD. <reference_dir> is the project's REDOCK_REFERENCE folder,
+    outside TARGETS/ on purpose: a TARGETS subfolder without grid.txt makes the docking run abort."""
+    mol, method = _mol_with_bond_orders(ligand, template_smiles)
     mol.SetProp("_Name", ligand_name)
 
     group_dir = os.path.join(ligands_dir, REDOCK_GROUP)
@@ -263,7 +297,7 @@ def export_ligand_for_redocking(
     finally:
         writer.close()
 
-    ref_dir = reference_dir(app_dir)
+    ref_dir = reference_dir
     os.makedirs(ref_dir, exist_ok=True)
     reference_path = os.path.join(ref_dir, f"{ligand_name}.pdb")
     with open(reference_path, "w", encoding="utf-8") as handle:
@@ -288,8 +322,8 @@ def export_ligand_for_redocking(
     }
 
 
-def load_reference_info(app_dir: str, ligand_name: str) -> Optional[dict[str, Any]]:
-    path = os.path.join(reference_dir(app_dir), f"{ligand_name}.json")
+def load_reference_info(reference_dir: str, ligand_name: str) -> Optional[dict[str, Any]]:
+    path = os.path.join(reference_dir, f"{ligand_name}.json")
     if not os.path.isfile(path):
         return None
     try:
@@ -297,7 +331,7 @@ def load_reference_info(app_dir: str, ligand_name: str) -> Optional[dict[str, An
             info = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return None
-    info["reference_path"] = os.path.join(reference_dir(app_dir), f"{ligand_name}.pdb")
+    info["reference_path"] = os.path.join(reference_dir, f"{ligand_name}.pdb")
     return info if os.path.isfile(info["reference_path"]) else None
 
 

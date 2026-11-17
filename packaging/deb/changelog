@@ -1,0 +1,56 @@
+codoc (2.0.0-1) unstable; urgency=low
+
+  * Versão MAJOR: o trabalho passa a ser organizado em projetos.
+    - A pasta JOBS virou PROJECTS (renomeada automaticamente na primeira
+      execução, sem copiar nem apagar nada) e as pastas comuns LIGANDS e
+      TARGETS deixaram de existir: cada projeto guarda os seus ligantes
+      (CONVERSION/LIGANDS), alvos (TARGETS), resultados (DOCKING) e as
+      referências de redocagem (REDOCK_REFERENCE).
+    - A aba STEP 1 virou CONFIG, com os grupos Projects (criar ou retomar um
+      projeto carregando os .json de cada etapa) e Performance Options; os
+      Docking parameters ficam no STEP 3, ao lado do monitor. As etapas
+      seguintes foram renumeradas (STEP 1 a STEP 4). Run type, Result name,
+      Jobs, Ligands e Targets foram removidos do antigo STEP 1.
+    - Ligands > Browse (STEP 1) abre a pasta BASE e importa arquivos
+      multiligante e/ou pastas de ligantes, copiando-os para o projeto.
+    - CONVERSION_ORIGINALS foi eliminada: CONVERSION/LIGANDS guarda só os
+      arquivos após o split e, no fim, os .pdbqt.
+    - O docking, executado de novo no mesmo projeto, retoma pelos ligantes
+      ainda pendentes (substitui o RESTART).
+    - O CODOC deixou de abrir com uma janela de terminal (Terminal=false nos
+      atalhos). O menu Help > Terminal abre um terminal já no venv do CODOC,
+      com a saída da sessão (~/.local/state/CODOC/terminal.log) e prompt para
+      comandos. Instalações via apt-get usam pkexec quando não há terminal.
+    - A conversão para PDBQT (STEP 1) tenta o outro motor quando o escolhido
+      falha em um ligante (RDKit -> OpenBabel e OpenBabel -> RDKit); só vão
+      para CONVERSION_FAILURES os que falham nos dois. O Reject invalid PDBQT
+      escolhe a validação pelo conteúdo de cada arquivo (Meeko ou OpenBabel).
+    - O PDBQT gerado pelo RDKit/Meeko mantém o REMARK SMILES do Meeko (a forma
+      protonada, a que foi acoplada): é ela que aparece no CSV e no relatório
+      (a busca de nome usa a forma neutralizada), e o Meeko a usa para
+      sanitizar o arquivo no Reject invalid PDBQT; a checagem das linhas ATOM
+      só entra quando o Meeko não consegue reconstruir a molécula.
+    - A protonação dos ligantes (RDKit/Meeko) passou a usar o estado predominante
+      no pH (Dimorphite-DL com precisão de pKa 0): antes a primeira de várias
+      variantes, em ordem que mudava a cada execução, decidia o estado.
+    - STEP 1 ganhou o grupo Monitor, à direita de Ligand preparation settings:
+      tabela com a quantidade de ligantes em cada etapa (Groups, Multimodels,
+      Splitted, Empty, Converted, Rejected, Recovered), somada sobre todas as
+      subpastas e atualizada enquanto uma ação roda e ao terminar.
+    - Manuais em português e inglês atualizados.
+
+ -- Moisés Maia <moimaian@gmail.com>  Tue, 17 Nov 2026 13:00:00 -0300
+
+codoc (1.0.0-1) unstable; urgency=low
+
+  * Primeira versão numerada e empacotada em .deb (/opt/codoc, launcher
+    /usr/bin/codoc, entrada no menu). Versão única em MODULES/versao.py,
+    exibida no rodapé da aba HOME e em Help > About.
+  * Interface PyQt5 com docking de múltiplos alvos (AutoDock Vina 1.2.5 em
+    CPU e Vina-GPU 2.1 em GPU), preparo de ligantes (Open Babel/RDKit +
+    Meeko) e de alvos (ADFRsuite, PDB2PQR/PROPKA), filtro de drogabilidade,
+    grid a partir do ligante co-cristalizado, redocagem com RMSD,
+    caixa de pocket por P2Rank, nomes de compostos no relatório final,
+    interface em português e inglês e grupos recolhíveis.
+
+ -- Moisés Maia <moimaian@gmail.com>  Mon, 16 Nov 2026 12:00:00 -0300

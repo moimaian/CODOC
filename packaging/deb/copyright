@@ -1,0 +1,39 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: CODOC
+Upstream-Contact: Moisés Maia Neto <moimaian@gmail.com>
+Source: https://github.com/moimaian/CODOC
+
+Files: *
+Copyright: 2024-2026 Moisés Maia
+License: GPL-3+
+
+Files: BIN/vina_1.2.5_linux_x86_64 BIN/vina_split_1.2.5_linux_x86_64
+Copyright: The Scripps Research Institute (AutoDock Vina)
+License: Apache-2.0
+Comment: Binários oficiais do AutoDock Vina 1.2.5, sem alterações
+ (https://github.com/ccsb-scripps/AutoDock-Vina/releases/tag/v1.2.5).
+ O texto da licença está em /usr/share/common-licenses/Apache-2.0.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General Public
+ License version 3 can be found in "/usr/share/common-licenses/GPL-3".
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License"); you may
+ not use this file except in compliance with the License.
+ .
+ On Debian systems, the complete text of the Apache License version 2.0
+ can be found in "/usr/share/common-licenses/Apache-2.0".

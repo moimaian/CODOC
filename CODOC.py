@@ -37,7 +37,7 @@ import sys
 import tempfile
 import webbrowser
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, fields as dataclass_fields
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -110,16 +110,22 @@ except Exception:
 from PyQt5.QtCore import QSettings, QSize, QThread, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QGuiApplication, QIcon, QPixmap
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QAction,
     QApplication,
+    QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -128,16 +134,20 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QDoubleSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QTextEdit,
+    QTreeView,
+    QListView,
     QVBoxLayout,
     QWidget,
 )
 
+from MODULES.versao import VERSAO
 from MODULES.module_requirements import RequirementsInstaller, detect_hardware, detect_opencl_devices, get_boost_version, get_vina_gpu_version, venv_paths
 from MODULES.module_target_prepare import (
     TargetPrepareError,
@@ -150,6 +160,117 @@ from MODULES.module_report import generate_final_report as _generate_final_repor
 from MODULES.splash_screen import SplashScreen
 from MODULES import i18n
 from MODULES import module_cocrystal
+from MODULES import terminal as codoc_terminal
+from MODULES.projects import (
+    ProjectManager,
+    clean_project_name,
+    create_project,
+    list_projects,
+    migrate_legacy_jobs_dir,
+    projects_root,
+)
+
+_QtGroupBox = QGroupBox   # original Qt class (QGroupBox is rebound to the collapsible version below)
+
+
+class CollapsibleGroupBox(_QtGroupBox):
+    """QGroupBox that collapses/expands when its title is clicked (same behaviour as the groups of
+    CODRUG). Every QGroupBox of CODOC is of this class (see the rebind right below), so the
+    groups pile up under the title of the one that was collapsed and the tab content moves up.
+    Groups without a title do not collapse (there is nowhere to click).
+
+    Collapsing hides only the DIRECT child widgets of the group (nested ones disappear with them,
+    keeping their own visibility state) and fixes the height to that of the title; expanding shows
+    again only the ones that were visible before and restores the original minimum/maximum height.
+    An arrow in the title shows the state."""
+
+    _ARROW_OPEN = "\u25BE "
+    _ARROW_CLOSED = "\u25B8 "
+
+    # Emitted only when the USER collapses/expands by clicking the title (not by set_collapsed()
+    # called from code); the argument is the new "collapsed" state.
+    userToggled = pyqtSignal(bool)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._collapsed = False
+        self._base_title = _QtGroupBox.title(self)
+        self._restore_visible: list = []
+        self._restore_min_h = 0
+        self._restore_max_h = 16777215
+        self._refresh_title()
+
+    # ---- title (the clean text stays available through title()) ----
+    def setTitle(self, title):
+        self._base_title = str(title or "")
+        self._refresh_title()
+
+    def title(self):
+        return self._base_title
+
+    def _refresh_title(self):
+        if not self._base_title:
+            _QtGroupBox.setTitle(self, "")
+            return
+        arrow = self._ARROW_CLOSED if self._collapsed else self._ARROW_OPEN
+        _QtGroupBox.setTitle(self, arrow + self._base_title)
+
+    # ---- collapse ----
+    def is_collapsed(self):
+        return self._collapsed
+
+    def _direct_child_widgets(self):
+        return [c for c in self.children() if isinstance(c, QWidget) and not c.isWindow()]
+
+    def _collapsed_height(self):
+        return max(28, self.fontMetrics().height() + 14)
+
+    def set_collapsed(self, collapsed):
+        collapsed = bool(collapsed) and bool(self._base_title)
+        if collapsed == self._collapsed:
+            return
+        if collapsed:
+            children = self._direct_child_widgets()
+            # only a widget explicitly hidden by the program counts as "hidden on purpose"
+            self._restore_visible = [
+                w for w in children
+                if not (w.isHidden() and w.testAttribute(Qt.WA_WState_ExplicitShowHide))
+            ]
+            self._restore_min_h = self.minimumHeight()
+            self._restore_max_h = self.maximumHeight()
+            for w in children:
+                w.setVisible(False)
+            self._collapsed = True
+            self.setFixedHeight(self._collapsed_height())
+        else:
+            self._collapsed = False
+            self.setMinimumHeight(self._restore_min_h)
+            self.setMaximumHeight(self._restore_max_h)
+            for w in self._restore_visible:
+                w.setVisible(True)
+            self._restore_visible = []
+        self._refresh_title()
+        self.updateGeometry()
+
+    def mousePressEvent(self, event):
+        if (event.button() == Qt.LeftButton and self._base_title
+                and event.pos().y() <= self._collapsed_height()):
+            self.set_collapsed(not self._collapsed)
+            event.accept()
+            self.userToggled.emit(self._collapsed)
+            return
+        super().mousePressEvent(event)
+
+
+# Colour palette (the accent follows the CODOC logo, teal #006680):
+#   ACCENT  #29B6D8  selected tab, group titles, focus, primary buttons
+#   ACCENT2 #1893B3  hover and text selection
+#   LOGO    #006680  pressed buttons and progress bars
+# Green stays only where it means "ok" (project open, CPU/GPU monitor).
+
+# Every QGroupBox created from here on in CODOC is collapsible.
+QGroupBox = CollapsibleGroupBox
+
 
 APP_NAME = "CODOC"
 APP_DIR_NAME = "CODOC"
@@ -173,7 +294,7 @@ QGroupBox::title {
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
-    color: #2ECC71;
+    color: #29B6D8;
 }
 QLabel {
     background: transparent;
@@ -187,10 +308,10 @@ QLineEdit, QComboBox, QPlainTextEdit, QTextEdit, QTableWidget, QSpinBox, QDouble
     padding: 4px 8px;
     background: #1C3249;
     color: #C9D1D9;
-    selection-background-color: #27AE60;
+    selection-background-color: #1893B3;
 }
 QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus, QTableWidget:focus {
-    border: 2px solid #2ECC71;
+    border: 2px solid #29B6D8;
 }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
     background: #17222E;
@@ -198,16 +319,16 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabl
     border-color: #22374A;
 }
 QPushButton {
-    background: #1A4A30;
-    color: #2ECC71;
+    background: #0F3A48;
+    color: #29B6D8;
     font-weight: bold;
-    border: 1px solid #2ECC71;
+    border: 1px solid #29B6D8;
     border-radius: 5px;
     padding: 6px 16px;
 }
-QPushButton:hover { background: #27AE60; color: #0D1B2A; }
-QPushButton:pressed { background: #1E8449; color: #FFF; }
-QPushButton:disabled { background: #1C2E20; color: #3D6B4A; border-color: #2A4A36; }
+QPushButton:hover { background: #1893B3; color: #0D1B2A; }
+QPushButton:pressed { background: #006680; color: #FFF; }
+QPushButton:disabled { background: #13262E; color: #3D7285; border-color: #2A4F5E; }
 QMenuBar {
     background: #0D1B2A;
     color: #C9D1D9;
@@ -215,7 +336,7 @@ QMenuBar {
 }
 QMenuBar::item:selected {
     background: #1C3249;
-    color: #2ECC71;
+    color: #29B6D8;
 }
 QMenu {
     background: #14253A;
@@ -224,7 +345,7 @@ QMenu {
 }
 QMenu::item:selected {
     background: #1C3249;
-    color: #2ECC71;
+    color: #29B6D8;
 }
 QTabWidget::pane {
     border: 1px solid #2A4A6B;
@@ -240,8 +361,27 @@ QTabBar::tab {
 }
 QTabBar::tab:selected {
     background: #14253A;
-    color: #2ECC71;
-    border-bottom: 3px solid #2ECC71;
+    color: #29B6D8;
+    border-bottom: 3px solid #29B6D8;
+}
+QCheckBox { color: #C9D1D9; spacing: 6px; }
+QCheckBox::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid #2A4A6B;
+    border-radius: 3px;
+    background: #1C3249;
+}
+QCheckBox::indicator:checked {
+    background: #29B6D8;
+    border-color: #29B6D8;
+}
+QCheckBox::indicator:disabled {
+    background: #17222E;
+    border-color: #22374A;
+}
+QCheckBox::indicator:checked:disabled {
+    background: #1B5A6B;
+    border-color: #1B5A6B;
 }
 QProgressBar {
     border: 1px solid #2A4A6B;
@@ -250,7 +390,7 @@ QProgressBar {
     background: #1C3249;
 }
 QProgressBar::chunk {
-    background: #1E8449;
+    background: #006680;
 }
 """
 
@@ -267,7 +407,7 @@ QPushButton:hover {
     color: #C9D1D9;
 }
 QPushButton:pressed {
-    color: #2ECC71;
+    color: #29B6D8;
 }
 QPushButton:disabled {
     color: #2A4A6B;
@@ -295,13 +435,10 @@ class DockingSettings:
     docking_mode: str = "normal"
     docking_type: str = "Rigid"
     processing_type: str = "CPU"
-    run_type: str = "NEW"
-    selected_result: str = ""
     opencl_platform_id: int = -1
     opencl_device_id: int = -1
     split_results: bool = False
     cpu_threads: int = max(1, os.cpu_count() or 1)
-    cpu_parallelism: int = min(10, max(1, os.cpu_count() or 1))
     exhaustiveness: int = max(1, os.cpu_count() or 1)
     gpu_threads: int = 8000
     poses: int = 9
@@ -336,6 +473,21 @@ class LigandSettings:
     h_donor_max: int = 5
     h_acceptor_max: int = 10
     tpsa_max: float = 140.0
+    # Files and folders the user imported into this project (STEP 1 "Ligands" > Browse). Only a
+    # record - the copies live in CONVERSION/LIGANDS; the originals are never touched.
+    ligand_sources: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TargetSettings:
+    """What the STEP 2 form held when it was last saved (the grid numbers, pH and spacing live in
+    DockingSettings because the docking worker and the final report read them from there)."""
+    mode_index: int = 0
+    target_name: str = ""
+    target_file: str = ""
+    rigid_file: str = ""
+    flex_file: str = ""
+    grid_file: str = ""
 
 
 @dataclass
@@ -346,7 +498,7 @@ class ResultViewSettings:
 
 def _known_dataclass_kwargs(dataclass_type: type, data: dict[str, Any]) -> dict[str, Any]:
     """Drops any key in `data` that isn't a current field of `dataclass_type`, so loading an
-    older .codoc_settings.json - saved before a field was removed (e.g. the old ligand-conversion
+    older project .json file - saved before a field was removed (e.g. the old ligand-conversion
     speed_first/speed_second/timeout_first/timeout_second knobs) - degrades to that field's
     current default instead of TypeError'ing the whole settings load."""
     valid_names = {field.name for field in dataclass_fields(dataclass_type)}
@@ -402,7 +554,6 @@ class DockingWorker(QThread):
         settings: DockingSettings,
         docking_type: str,
         processing_type: str,
-        run_type: str,
     ) -> None:
         super().__init__()
         self.app_dir = app_dir
@@ -413,7 +564,7 @@ class DockingWorker(QThread):
         self.settings = settings
         self.docking_type = docking_type
         self.processing_type = processing_type
-        self.run_type = run_type
+        self.skipped_existing = 0   # ligands whose result is already in the project (resume)
         self.vina = os.path.join(app_dir, "BIN", "vina_1.2.5_linux_x86_64")
         self.vina_split = os.path.join(app_dir, "BIN", "vina_split_1.2.5_linux_x86_64")
         self.vina_gpu = os.path.join(str(Path.home()), "Vina-GPU-2.1", "AutoDock-Vina-GPU-2.1", "AutoDock-Vina-GPU-2-1")
@@ -423,23 +574,34 @@ class DockingWorker(QThread):
             self._validate_environment()
             result_folder = self._prepare_result_folder()
             pending_jobs = self._build_pending_jobs(result_folder)
+            if self.skipped_existing:
+                self.progress_text.emit(
+                    f"Resuming project {self.job_name}: {self.skipped_existing} ligand(s) already docked were skipped."
+                )
             if not pending_jobs:
-                self.finished_ok.emit(f"No pending docking jobs were found in {os.path.basename(result_folder)}.")
+                if self.skipped_existing:
+                    self.finished_ok.emit(f"No pending docking jobs were found in {self.job_name}: every ligand is already docked.")
+                else:
+                    self.failed.emit(
+                        f"No PDBQT ligands were found in {self.ligands_dir}. Import and convert ligands in STEP 1 first."
+                    )
                 return
 
             if self.processing_type == "GPU":
                 self._run_gpu_jobs(result_folder, pending_jobs)
             else:
                 self._run_cpu_jobs(result_folder, pending_jobs)
-            self.finished_ok.emit(f"Docking finished for job {self.job_name}. Results available in {result_folder}.")
+            self.finished_ok.emit(f"Docking finished for project {self.job_name}. Results available in {result_folder}.")
         except Exception as exc:
             self.failed.emit(str(exc))
 
     def _validate_environment(self) -> None:
         if not os.path.isdir(self.ligands_dir):
             raise RuntimeError(f"Ligands directory not found: {self.ligands_dir}")
-        if not os.path.isdir(self.targets_dir):
-            raise RuntimeError(f"Targets directory not found: {self.targets_dir}")
+        if not os.path.isdir(self.targets_dir) or not any(p.is_dir() for p in Path(self.targets_dir).iterdir()):
+            raise RuntimeError(
+                f"No prepared targets found in {self.targets_dir}. Prepare at least one target in STEP 2 first."
+            )
         if self.processing_type == "GPU" and self.settings.docking_mode != "normal":
             raise RuntimeError("score_only and local_only are available only for CPU runs with AutoDock Vina.")
         if self.processing_type == "GPU":
@@ -452,10 +614,9 @@ class DockingWorker(QThread):
             raise RuntimeError(f"AutoDock Vina not found: {self.vina}")
 
     def _prepare_result_folder(self) -> str:
-        # `self.results_dir` is already the resolved DOCKING folder for the active job (chosen by
-        # MainWindow._save_settings when "Save settings" was clicked): a fresh, empty folder for
-        # run_type == "NEW", or an existing job's folder to resume into for run_type == "RESTART".
-        # No further per-run subfolder is created here anymore.
+        # `self.results_dir` is the DOCKING folder of the open project. Running docking again in the
+        # same project resumes it: ligands that already have a result are skipped (see
+        # _build_pending_jobs). No per-run subfolder is created.
         os.makedirs(self.results_dir, exist_ok=True)
         for target_dir in sorted(p for p in Path(self.targets_dir).glob("*/") if p.is_dir()):
             os.makedirs(os.path.join(self.results_dir, target_dir.name), exist_ok=True)
@@ -476,7 +637,8 @@ class DockingWorker(QThread):
                     ligand_name = ligand_file.stem
                     ligand_out_dir = os.path.join(lig_result_group_dir, ligand_name)
                     ligand_out_file = os.path.join(ligand_out_dir, f"{ligand_name}.pdbqt")
-                    if self.run_type == "RESTART" and os.path.isfile(ligand_out_file):
+                    if os.path.isfile(ligand_out_file):
+                        self.skipped_existing += 1
                         continue
                     jobs.append(
                         {
@@ -680,11 +842,9 @@ class DockingWorker(QThread):
 #
 # These mirror the equivalent LigandToolsWorker methods below, but are kept as free
 # functions (no `self`, no Qt objects) so they can be pickled and shipped to separate
-# worker PROCESSES via ProcessPoolExecutor. This is the Python/RDKit analogue of the
-# `parallel -j "$cpu" -a "$list" process_smi1D {}` step in CODOC.sh: instead of GNU
-# parallel forking one shell process per ligand, each ligand is submitted as a job to a
-# pool of worker processes, which run truly in parallel (bypassing the GIL, unlike a
-# thread pool, since RDKit embedding/optimization is CPU-bound Python+C code).
+# worker PROCESSES via ProcessPoolExecutor: each ligand is submitted as a job to a pool of
+# worker processes, which run truly in parallel (bypassing the GIL, unlike a thread pool,
+# since RDKit embedding/optimization is CPU-bound Python+C code).
 # --------------------------------------------------------------------------------------
 
 def _lig_require_rdkit() -> None:
@@ -803,6 +963,12 @@ def _lig_prepare_3d_molecule(mol: Any, minimization_steps: int, forcefield: str,
 def _lig_protonate_smiles(smiles: str, ph: float) -> str:
     """Return the dominant ionization state of `smiles` at `ph`, per Dimorphite-DL's SMARTS/pKa rules.
 
+    pKa precision 0 asks Dimorphite-DL for the single state that predominates at exactly `ph`. With
+    a wider precision it also returns the neighbouring states (e.g. both the neutral and the
+    protonated amine) in an order that changes from one run to the next, so taking the first one
+    picked the ionization state by chance. If several states still come back (a pH sitting right on
+    a pKa), the choice is made deterministic by sorting them.
+
     Supports both the current Dimorphite-DL API (module-level `protonate_smiles`, >=2.0) and the
     legacy `DimorphiteDL` class API (<2.0), since either may be present in the target environment.
     """
@@ -810,22 +976,29 @@ def _lig_protonate_smiles(smiles: str, ph: float) -> str:
     try:
         protonate_fn = getattr(dimorphite_dl, "protonate_smiles", None)
         if protonate_fn is not None:
-            variants = protonate_fn(smiles, ph_min=ph, ph_max=ph, precision=1.0)
+            variants = protonate_fn(smiles, ph_min=ph, ph_max=ph, precision=0.0)
         else:
-            variants = dimorphite_dl.DimorphiteDL(min_ph=ph, max_ph=ph, pka_precision=1.0).protonate(smiles)
+            variants = dimorphite_dl.DimorphiteDL(min_ph=ph, max_ph=ph, pka_precision=0.0).protonate(smiles)
     except Exception:
         return smiles
-    return variants[0] if variants else smiles
+    return sorted(variants)[0] if variants else smiles
 
 
 def _lig_prepend_pdbqt_metadata(pdbqt_path: Path, ligand_name: str, smiles: str) -> None:
+    """Gives a freshly written PDBQT its `REMARK  Name` header line.
+
+    A PDBQT written by Meeko already carries `REMARK SMILES` - the SMILES of the PROTONATED molecule
+    that was actually prepared, which Meeko's own index map (`SMILES IDX`) and `H PARENT` refer to -
+    so it is kept as it is: that is the form that docks, the one the results CSV and the report must
+    show, and the one Meeko needs to rebuild the molecule when validating the file. Only a PDBQT
+    without it (OpenBabel's) gets `REMARK SMILES` from `smiles`, the ligand's SMILES as read from its
+    input."""
     if not pdbqt_path.exists():
         return
     content = pdbqt_path.read_text(encoding="utf-8", errors="ignore")
     content = re.sub(r"^REMARK\s+Name.*\n?", "", content, flags=re.MULTILINE)
-    content = re.sub(r"^REMARK SMILES(?! IDX).*\n?", "", content, flags=re.MULTILINE)
     header = [f"REMARK  Name = {ligand_name}"]
-    if smiles:
+    if smiles and "REMARK SMILES IDX" not in content:
         header.append(f"REMARK SMILES {smiles}")
     pdbqt_path.write_text("\n".join(header) + "\n" + content, encoding="utf-8")
 
@@ -919,19 +1092,52 @@ def _lig_convert_single_openbabel(
     return None
 
 
-def _lig_convert_worker(payload: tuple[str, str, str, str, float, int, str, str]) -> tuple[str, Optional[str]]:
-    """Entry point executed inside each worker process (analogous to process_smi1D in CODOC.sh)."""
+def _lig_pdbqt_has_atoms(path: Path) -> bool:
+    """True when `path` is a PDBQT with at least one ATOM line. A conversion tool can exit without an
+    error and still leave an empty file, or only the REMARK header CODOC adds."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            return any(line.startswith(("ATOM", "HETATM")) for line in handle)
+    except OSError:
+        return False
+
+
+def _lig_convert_with_engine(
+    engine: str, input_path: Path, output_path: Path, ph: float, minimization_steps: int, forcefield: str, algorithm: str
+) -> Optional[str]:
+    """Converts one ligand with `engine`. Returns None on success, otherwise the reason. A run that
+    reports no error but leaves no PDBQT behind (OpenBabel can exit with status 0 and write
+    nothing) counts as a failure, and any partial output is removed."""
+    convert = _lig_convert_single_openbabel if engine == "OpenBabel" else _lig_convert_single_rdkit
+    try:
+        error = convert(input_path, output_path, ph, minimization_steps, forcefield, algorithm)
+    except Exception as exc:
+        error = f"Unexpected error converting {input_path.name} with {engine}: {exc}"
+    if error is None and not _lig_pdbqt_has_atoms(output_path):
+        error = f"{engine} produced no PDBQT output for {input_path.name}."
+    if error is not None:
+        output_path.unlink(missing_ok=True)
+    return error
+
+
+def _lig_convert_worker(
+    payload: tuple[str, str, str, str, float, int, str, str]
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Entry point executed inside each worker process of the conversion pool. Tries the selected
+    engine and, when it fails, the other one (RDKit <-> OpenBabel). Returns (input, error, note):
+    `error` is set only when both engines failed; `note` says that the fallback engine converted it."""
     input_str, output_str, _group_name, engine, ph, minimization_steps, forcefield, algorithm = payload
     input_path = Path(input_str)
     output_path = Path(output_str)
-    try:
-        if engine == "OpenBabel":
-            error = _lig_convert_single_openbabel(input_path, output_path, ph, minimization_steps, forcefield, algorithm)
-        else:
-            error = _lig_convert_single_rdkit(input_path, output_path, ph, minimization_steps, forcefield, algorithm)
-    except Exception as exc:
-        error = f"Unexpected error converting {input_path.name}: {exc}"
-    return (input_str, error)
+    settings = (ph, minimization_steps, forcefield, algorithm)
+    error = _lig_convert_with_engine(engine, input_path, output_path, *settings)
+    if error is None:
+        return (input_str, None, None)
+    fallback_engine = "RDKit" if engine == "OpenBabel" else "OpenBabel"
+    fallback_error = _lig_convert_with_engine(fallback_engine, input_path, output_path, *settings)
+    if fallback_error is None:
+        return (input_str, None, f"{input_path.name}: {engine} failed, converted with {fallback_engine} (fallback).")
+    return (input_str, f"{error}\n{fallback_error}", None)
 
 
 class LigandToolsWorker(QThread):
@@ -947,15 +1153,18 @@ class LigandToolsWorker(QThread):
         conversion_dir: str,
         settings: LigandSettings,
         operation: str,
+        sources: Optional[list[str]] = None,
     ) -> None:
         super().__init__()
         self.app_dir = app_dir
+        # ligands_dir is <project>/CONVERSION/LIGANDS: the base folder every ligand routine works on
+        # (imported files, split results and, in the end, the converted .pdbqt files).
         self.ligands_dir = ligands_dir
         self.conversion_dir = conversion_dir
         self.settings = settings
         self.operation = operation
+        self.sources = list(sources or [])
         self.failure_dir = os.path.join(conversion_dir, "CONVERSION_FAILURES")
-        self.originals_dir = os.path.join(conversion_dir, "CONVERSION_ORIGINALS")
         self.drug_dir = os.path.join(conversion_dir, "NO_DRUGGABILITY")
         self.empty_dir = os.path.join(conversion_dir, "EMPTY_LIGANDS")
         self.dataframes_dir = os.path.join(conversion_dir, "DATAFRAMES")
@@ -965,6 +1174,7 @@ class LigandToolsWorker(QThread):
         try:
             os.makedirs(self.conversion_dir, exist_ok=True)
             operations = {
+                "import_ligands": self._import_ligand_sources,
                 "split_multimodel": self._split_multimodel_files,
                 "split_large_folders": self._split_large_folders,
                 "generate_lipinski": self._generate_lipinski_tables,
@@ -1005,15 +1215,60 @@ class LigandToolsWorker(QThread):
     def _run_command(self, command: list[str], cwd: Optional[str] = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-    def _archive_original_file(self, file_path: Path) -> None:
-        destination_dir = Path(self.originals_dir) / file_path.parent.name
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / file_path.name
-        counter = 1
-        while destination.exists():
-            destination = destination_dir / f"{file_path.stem}_{counter}{file_path.suffix}"
-            counter += 1
-        shutil.move(str(file_path), destination)
+    def _import_ligand_sources(self) -> str:
+        """Copy the files / folders picked in STEP 1 into <project>/CONVERSION/LIGANDS.
+
+        * a file (single or multi-ligand) is copied to the root of CONVERSION/LIGANDS, where
+          "Split multimodel files" turns it into a group folder named after the file;
+        * a folder of individual ligands is copied to CONVERSION/LIGANDS/<folder name> (a group).
+
+        The originals are only read, never moved or deleted. Importing is idempotent: anything
+        already present in the project (the file itself, its split group - a group folder that
+        holds files, an empty one does not count - or a file of the same name inside a group
+        folder) is skipped, so repeating the selection never duplicates ligands."""
+        root = Path(self.ligands_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        if not self.sources:
+            return "No ligand files or folders were selected."
+        copied_files = 0
+        already_there: list[str] = []
+        not_found: list[str] = []
+        total = len(self.sources)
+        for index, raw in enumerate(self.sources, start=1):
+            source = Path(raw)
+            self._emit_progress(index - 1, total, f"Importing {source.name}")
+            if source.is_file():
+                group_name = self._sanitize_name(source.stem)
+                destination = root / source.name
+                group_dir = root / group_name
+                if destination.exists() or (group_dir.is_dir() and any(group_dir.iterdir())):
+                    already_there.append(source.name)
+                    continue
+                shutil.copy2(str(source), destination)
+                copied_files += 1
+            elif source.is_dir():
+                group_dir = root / self._sanitize_name(source.name)
+                group_dir.mkdir(parents=True, exist_ok=True)
+                files = [item for item in sorted(source.iterdir()) if item.is_file()]
+                if not files:
+                    self.progress_text.emit(f"Folder {source.name} has no ligand files directly inside it - nothing to copy.")
+                for file_path in files:
+                    destination = group_dir / file_path.name
+                    if destination.exists():
+                        continue
+                    shutil.copy2(str(file_path), destination)
+                    copied_files += 1
+                if not any(group_dir.iterdir()):
+                    group_dir.rmdir()
+            else:
+                not_found.append(source.name)
+        self._emit_progress(total, total, "Import finished")
+        message = f"Imported {copied_files} file(s) into {root}."
+        if already_there:
+            message += "\nAlready in the project (skipped): " + ", ".join(already_there)
+        if not_found:
+            message += "\nNot found (skipped): " + ", ".join(not_found)
+        return message
 
     def _mol_from_file(self, file_path: Path) -> Optional[Any]:
         self._require_rdkit()
@@ -1302,7 +1557,6 @@ class LigandToolsWorker(QThread):
     def _convert_ligands_to_pdbqt(self) -> str:
         self._require_rdkit()
         os.makedirs(self.failure_dir, exist_ok=True)
-        os.makedirs(self.originals_dir, exist_ok=True)
         ligand_dirs = [path for path in sorted(Path(self.ligands_dir).glob("*/")) if path.is_dir()]
         selected_engine = (self.settings.conversion_engine or "RDKit").strip()
         if selected_engine != "OpenBabel":
@@ -1321,18 +1575,22 @@ class LigandToolsWorker(QThread):
         total = len(jobs)
         if total == 0:
             return "No pending ligand files were found for PDBQT conversion."
+        self._record_source_formats(jobs)
 
         requested_workers = int(getattr(self.settings, "conversion_workers", os.cpu_count() or 1) or 1)
         workers = max(1, min(requested_workers, total))
 
-        # Analogous to `parallel -j "$cpu" -a "$list" process_smi1D {}` in CODOC.sh: each
-        # ligand is dispatched to a pool of OS processes instead of a single serial loop,
+        # Each ligand is dispatched to a pool of OS processes instead of a single serial loop,
         # so the conversion actually uses the available CPU cores.
         mp_context = multiprocessing.get_context("fork") if "fork" in multiprocessing.get_all_start_methods() else multiprocessing.get_context()
 
         counter = 0
+        fallback_count = 0
+        finished_inputs: list[Path] = []
+        fallback_engine = "RDKit" if selected_engine == "OpenBabel" else "OpenBabel"
         self.progress_text.emit(
-            f"Converting {total} ligand(s) to PDBQT using {selected_engine} with {workers} parallel worker process(es)..."
+            f"Converting {total} ligand(s) to PDBQT using {selected_engine} (failures are retried with {fallback_engine}) "
+            f"with {workers} parallel worker process(es)..."
         )
         with ProcessPoolExecutor(max_workers=workers, mp_context=mp_context) as executor:
             future_map = {
@@ -1348,69 +1606,98 @@ class LigandToolsWorker(QThread):
                         self.settings.minimization_forcefield,
                         self.settings.minimization_algorithm,
                     ),
-                ): (input_path, group_name)
+                ): (input_path, output_path, group_name)
                 for input_path, output_path, group_name in jobs
             }
             for future in as_completed(future_map):
-                input_path, group_name = future_map[future]
+                input_path, output_path, group_name = future_map[future]
                 counter += 1
+                note = None
                 try:
-                    _, error = future.result()
+                    _, error, note = future.result()
                 except Exception as exc:
                     error = f"Worker process failed for {input_path.name}: {exc}"
                 self._emit_progress(counter, total, f"Converting {input_path.name} to PDBQT using {selected_engine}")
+                if note:
+                    fallback_count += 1
+                    self.progress_text.emit(note)
                 if error is not None:
                     failure_group = Path(self.failure_dir) / group_name
                     failure_group.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(input_path), failure_group / input_path.name)
                     self.progress_text.emit(error)
+                    finished_inputs.append(input_path)       # a copy now lives in CONVERSION_FAILURES
+                elif output_path.is_file():
+                    finished_inputs.append(input_path)       # its .pdbqt replaces it
 
-        for folder in ligand_dirs:
-            for file_path in sorted(folder.iterdir()):
-                if file_path.is_file() and file_path.suffix.lower() != ".pdbqt":
-                    self._archive_original_file(file_path)
+        # CONVERSION/LIGANDS ends up holding only the converted .pdbqt files: the split inputs that
+        # were converted (or copied to CONVERSION_FAILURES) are removed. The user's originals, outside
+        # the project, are never touched.
+        for input_path in finished_inputs:
+            input_path.unlink(missing_ok=True)
         return (
-            f"Ligand conversion to PDBQT completed ({total} file(s), {workers} worker process(es)). "
-            f"Original files were moved to {self.originals_dir}."
+            f"Ligand conversion to PDBQT completed ({total} file(s), {workers} worker process(es), "
+            f"{fallback_count} converted by the fallback engine). "
+            f"Converted inputs were replaced by their .pdbqt in {self.ligands_dir}; failures are in {self.failure_dir}."
         )
 
-    def _prepend_pdbqt_metadata(self, pdbqt_path: Path, ligand_name: str, smiles: str) -> None:
-        if not pdbqt_path.exists():
-            return
-        content = pdbqt_path.read_text(encoding="utf-8", errors="ignore")
-        content = re.sub(r"^REMARK\s+Name.*\n?", "", content, flags=re.MULTILINE)
-        header = [f"REMARK  Name = {ligand_name}"]
-        if smiles:
-            header.append(f"REMARK SMILES {smiles}")
-        pdbqt_path.write_text("\n".join(header) + "\n" + content, encoding="utf-8")
+    def _record_source_formats(self, jobs: list[tuple[Path, Path, str]]) -> None:
+        """Remember each group's original file format (e.g. ".sdf") in CONVERSION/databank_formats.json
+        before the inputs are replaced by their .pdbqt, so the Final Report can still state it. The
+        first recording of a group wins: a later partial pass would only see the leftovers."""
+        counts: dict[str, dict[str, int]] = {}
+        for input_path, _output, group_name in jobs:
+            per_group = counts.setdefault(group_name, {})
+            extension = input_path.suffix.lower()
+            per_group[extension] = per_group.get(extension, 0) + 1
+        path = Path(self.conversion_dir) / "databank_formats.json"
+        try:
+            recorded = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            recorded = {}
+        for group_name, per_group in counts.items():
+            recorded.setdefault(group_name, max(per_group, key=lambda ext: per_group[ext]))
+        try:
+            path.write_text(json.dumps(recorded, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def _reject_invalid_pdbqt(self) -> str:
         ligand_dirs = [path for path in sorted(Path(self.ligands_dir).glob("*/")) if path.is_dir()]
         total = sum(1 for folder in ligand_dirs for item in folder.glob("*.pdbqt"))
         counter = 0
         os.makedirs(self.failure_dir, exist_ok=True)
-        # Files converted by the RDKit engine are Meeko's own output, so they can be validated
-        # chemically by reconstructing them back into an RDKit Mol and sanitizing it - far more
-        # reliable than text heuristics. OpenBabel-written files don't carry the REMARK metadata
-        # that reconstruction depends on, so they keep the geometry/text heuristics below.
-        engine = (self.settings.conversion_engine or "RDKit").strip()
-        validator = self._invalid_pdbqt_reason_rdkit if engine == "RDKit" else self._invalid_pdbqt_reason_heuristic
         for folder in ligand_dirs:
             failure_group = Path(self.failure_dir) / folder.name
             failure_group.mkdir(parents=True, exist_ok=True)
             for file_path in sorted(folder.glob("*.pdbqt")):
                 counter += 1
                 self._emit_progress(counter, total, f"Checking PDBQT integrity for {file_path.name}")
-                reason = validator(file_path)
+                reason = self._invalid_pdbqt_reason(file_path)
                 if reason:
                     shutil.move(str(file_path), failure_group / file_path.name)
                     self.progress_text.emit(f"Moved {file_path.name} to failures: {reason}")
         return f"Rejected invalid PDBQT ligands to {self.failure_dir}."
 
+    def _invalid_pdbqt_reason(self, file_path: Path) -> str:
+        """Validates a PDBQT with the check that fits the engine that wrote it, told by its content
+        (a file may come from either engine now that a failed conversion is retried with the other
+        one): Meeko's "REMARK SMILES IDX" metadata allows the chemical round-trip; OpenBabel files
+        get the text/geometry heuristics."""
+        try:
+            written_by_meeko = "REMARK SMILES IDX" in file_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            written_by_meeko = False
+        if written_by_meeko:
+            return self._invalid_pdbqt_reason_rdkit(file_path)
+        return self._invalid_pdbqt_reason_heuristic(file_path)
+
     def _invalid_pdbqt_reason_rdkit(self, file_path: Path) -> str:
-        """Chemical validation for PDBQTs written by the RDKit+Meeko engine: reconstruct the
-        molecule Meeko's way (using the REMARK SMILES/index-map metadata it wrote) and run it
-        through RDKit's own sanitizer (valence, aromaticity, ring perception)."""
+        """Chemical validation for PDBQTs written by the RDKit+Meeko engine: Meeko rebuilds the
+        molecule from the REMARK SMILES / index map / H PARENT it wrote, and RDKit's sanitizer
+        checks it (valence, aromaticity, ring perception). Only when Meeko cannot rebuild the
+        molecule at all - e.g. a file from an older CODOC, whose REMARK SMILES had been replaced by
+        the pre-protonation SMILES - are the text/geometry checks of the ATOM lines used instead."""
         try:
             self._require_rdkit()
             _lig_require_meeko_reader()
@@ -1419,10 +1706,10 @@ class LigandToolsWorker(QThread):
         try:
             pdbqt_mol = PDBQTMolecule.from_file(str(file_path))
             mols = RDKitMolCreate.from_pdbqt_mol(pdbqt_mol)
-        except Exception as exc:
-            return f"could not reconstruct molecule from PDBQT: {exc}"
+        except Exception:
+            return self._invalid_pdbqt_reason_heuristic(file_path)
         if not mols or mols[0] is None:
-            return "could not reconstruct a molecule from this PDBQT"
+            return self._invalid_pdbqt_reason_heuristic(file_path)
         try:
             Chem.SanitizeMol(mols[0])
         except Exception as exc:
@@ -1446,6 +1733,8 @@ class LigandToolsWorker(QThread):
                 elif line.startswith("TORSDOF"):
                     torsdof_count += 1
 
+        if not atom_lines:
+            return "contains no atoms"
         reject_regex = re.compile(rf"\b({self.settings.rejected_elements})\b")
         previous_coords: Optional[tuple[float, float, float]] = None
         zero_issue_count = 0
@@ -1501,21 +1790,29 @@ class LigandToolsWorker(QThread):
                     recovered, message = self._recover_with_rdkit(smiles, output_path, file_path.name)
                 else:
                     recovered, message = self._recover_with_openbabel(smiles, output_path, file_path.name)
+                if recovered and not _lig_pdbqt_has_atoms(output_path):
+                    recovered, message = False, f"{recovery_engine} recovery produced no PDBQT output for {file_path.name}."
                 if not recovered:
                     self.progress_text.emit(message)
                     output_path.unlink(missing_ok=True)
                     continue
                 self.progress_text.emit(f"Recovered {file_path.name} using {recovery_engine}.")
-                self._prepend_pdbqt_metadata(output_path, file_path.stem, smiles)
-                # Validate with whichever check matches the engine that actually wrote this
-                # recovered file (not the main conversion_engine setting, which is the opposite
-                # engine here - recovery always retries with the other one).
-                validator = self._invalid_pdbqt_reason_rdkit if recovery_engine == "RDKit" else self._invalid_pdbqt_reason_heuristic
-                reason = validator(output_path)
+                _lig_prepend_pdbqt_metadata(output_path, file_path.stem, smiles)
+                reason = self._invalid_pdbqt_reason(output_path)
                 if reason:
                     output_path.unlink(missing_ok=True)
                     self.progress_text.emit(f"Recovered file {file_path.name} is still invalid: {reason}")
-        return f"Recovery attempt completed. Recovered ligands are under {recovered_root}."
+        # Nothing recovered -> no empty RECOVERED folders left behind in LIGANDS.
+        if recovered_root.is_dir():
+            for group_dir in sorted(recovered_root.iterdir()):
+                if group_dir.is_dir() and not any(group_dir.iterdir()):
+                    group_dir.rmdir()
+            if not any(recovered_root.iterdir()):
+                recovered_root.rmdir()
+        recovered_total = sum(len(names) for _dir, _dirs, names in os.walk(recovered_root))
+        if not recovered_total:
+            return "Recovery attempt completed. No ligand could be recovered."
+        return f"Recovery attempt completed. {recovered_total} ligand(s) recovered under {recovered_root}."
 
     def _recover_with_rdkit(self, smiles: str, output_path: Path, ligand_name: str) -> tuple[bool, str]:
         try:
@@ -1616,6 +1913,46 @@ class LigandToolsWorker(QThread):
                 file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return f"Macrocyclic ring fixes completed. Backups are in {self.macrocycles_dir}."
 
+class LigandSourcesDialog(QFileDialog):
+    """File dialog that lets the user pick files AND folders in one go (Ctrl/Shift to select several).
+
+    Qt's own modes cannot do it: the "directory" mode lists files too but refuses to accept a
+    selection whose first item is a file, and the "files" mode refuses folders. So this one uses the
+    directory mode, turns on extended selection in its views and accepts any non-empty selection."""
+
+    def __init__(self, parent: QWidget, title: str, start_dir: str) -> None:
+        super().__init__(parent, title, start_dir)
+        self.setFileMode(QFileDialog.Directory)
+        self.setOption(QFileDialog.DontUseNativeDialog, True)
+        self.setOption(QFileDialog.ShowDirsOnly, False)
+        for view in self.findChildren((QListView, QTreeView)):
+            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            view.selectionModel().selectionChanged.connect(self._enable_accept_button)
+        self._accept_button = None
+        buttons = self.findChild(QDialogButtonBox)
+        if buttons is not None:
+            for button in buttons.buttons():
+                if buttons.buttonRole(button) == QDialogButtonBox.AcceptRole:
+                    self._accept_button = button
+
+    def _has_choice(self) -> bool:
+        """True when something is highlighted in the list/tree or typed in the name box. (With nothing
+        chosen Qt would answer "the folder being shown", which here would import a whole BASE folder.)"""
+        name_box = self.findChild(QLineEdit, "fileNameEdit")
+        typed = bool(name_box is not None and name_box.text().strip())
+        highlighted = any(view.selectionModel().hasSelection() for view in self.findChildren((QListView, QTreeView)))
+        return (typed or highlighted) and bool(self.selectedFiles())
+
+    def _enable_accept_button(self, *_args) -> None:
+        # Qt disables the button for a file-first selection (see above); re-enable it after Qt's own update.
+        if self._accept_button is not None:
+            QTimer.singleShot(0, lambda: self._accept_button.setEnabled(self._has_choice()))
+
+    def accept(self) -> None:
+        if self._has_choice():
+            QDialog.accept(self)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1631,17 +1968,15 @@ class MainWindow(QMainWindow):
         self._i18n_registry: list[tuple[str, Any, dict[str, Any]]] = []
 
         self.app_dir = os.path.abspath(os.path.dirname(__file__))
-        self.settings_path = os.path.join(self.app_dir, ".codoc_settings.json")
-        self.legacy_codoc = os.path.join(str(Path.home()), "CODOC", "CODOC.sh")
+        migrate_legacy_jobs_dir(self.app_dir)   # JOBS/ -> PROJECTS/ (older versions)
         self.settings = DockingSettings()
         self.ligand_settings = LigandSettings()
+        self.target_settings = TargetSettings()
         self.result_view_settings = ResultViewSettings()
+        self.project = ProjectManager(self.app_dir, self)
         self._init_paths()
         self._ensure_runtime_dirs()
-        self._load_settings()
-        self._restore_active_job()
 
-        self._tr("app_titulo", self.setWindowTitle)
         self.setStyleSheet(_SS_MAIN)
         logo_path = os.path.join(self.app_dir, "ICONS", "logo_codocP.png")
         if os.path.isfile(logo_path):
@@ -1655,23 +1990,36 @@ class MainWindow(QMainWindow):
         self.tabs.setObjectName("main_tabs")
         self.setCentralWidget(self.tabs)
         self._build_tabs()
+        self.project.changed.connect(self._on_project_changed)
+        self._refresh_project_texts()
         self._apply_initial_window_size(screen)
         self._start_hw_monitor()
 
     def _init_paths(self) -> None:
-        self.ligands_dir = os.path.join(self.app_dir, "LIGANDS")
-        self.targets_dir = os.path.join(self.app_dir, "TARGETS")
-        self.jobs_dir = os.path.join(self.app_dir, "JOBS")
+        self.base_dir = os.path.join(self.app_dir, "BASE")   # where the file dialogs for ligands/targets start
         self.bin_dir = os.path.join(self.app_dir, "BIN")
-        self.current_job_name = ""
-        self.results_dir = ""
-        self.conversion_results_dir = ""
+
+    # Folders of the open project ("" while no project is open).
+    @property
+    def ligands_dir(self) -> str:
+        return self.project.ligands_dir
+
+    @property
+    def targets_dir(self) -> str:
+        return self.project.targets_dir
+
+    @property
+    def conversion_dir(self) -> str:
+        return self.project.conversion_dir
+
+    @property
+    def docking_dir(self) -> str:
+        return self.project.docking_dir
 
     def _ensure_runtime_dirs(self) -> None:
         for folder in (
-            self.ligands_dir,
-            self.targets_dir,
-            self.jobs_dir,
+            projects_root(self.app_dir),
+            self.base_dir,
             self.bin_dir,
             os.path.join(self.app_dir, "TEST"),
             os.path.join(self.app_dir, "MODULES"),
@@ -1679,64 +2027,119 @@ class MainWindow(QMainWindow):
         ):
             os.makedirs(folder, exist_ok=True)
 
-    def _job_dir(self, job_name: str) -> str:
-        return os.path.join(self.jobs_dir, job_name)
+    def _t(self, key: str, **kwargs) -> str:
+        """Text of `key` in the current interface language (for texts built at the moment they are shown)."""
+        return i18n.t(key, self._idioma, **kwargs)
 
-    def _job_docking_dir(self, job_name: str) -> str:
-        return os.path.join(self._job_dir(job_name), "DOCKING")
+    # ------------------------------------------------------------------ projects ------------------------------------------------------------------
+    def _require_project(self) -> bool:
+        """Every step works inside the open project; warn when there is none."""
+        if self.project.is_open:
+            return True
+        QMessageBox.warning(self, APP_NAME, self._t("msg_no_project"))
+        return False
 
-    def _job_conversion_dir(self, job_name: str) -> str:
-        return os.path.join(self._job_dir(job_name), "CONVERSION")
+    def _refresh_previous_projects(self, select: str = "") -> None:
+        # At startup nothing is open: "Previous project" (disabled while New Project is selected)
+        # shows the last project that was open when CODOC was closed.
+        last_open = str(QSettings("CODOC", "CODOC").value("last_project", "") or "")
+        current = select or self.cb_prev_project.currentText() or self.project.name or last_open
+        self.cb_prev_project.blockSignals(True)
+        self.cb_prev_project.clear()
+        self.cb_prev_project.addItems(list_projects(self.app_dir))
+        index = self.cb_prev_project.findText(current)
+        if index >= 0:
+            self.cb_prev_project.setCurrentIndex(index)
+        self.cb_prev_project.blockSignals(False)
 
-    def _generate_job_name(self) -> str:
-        scoring = (self.settings.scoring_function or "vina").strip().upper()
-        docking_type = (self.settings.docking_type or "Rigid").strip().upper()
-        processing_type = (self.settings.processing_type or "CPU").strip().upper()
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        return f"{timestamp}_{scoring}_{docking_type}_{processing_type}"
+    def _sync_project_mode(self) -> None:
+        load_mode = self.rb_proj_load.isChecked()
+        self.ed_proj_name.setEnabled(not load_mode)
+        self.cb_prev_project.setEnabled(load_mode)
+        if load_mode:
+            self._refresh_previous_projects()
+        self._update_project_date()
 
-    def _set_current_job(self, job_name: str, create: bool = False) -> None:
-        self.current_job_name = job_name
-        self.results_dir = self._job_docking_dir(job_name)
-        self.conversion_results_dir = self._job_conversion_dir(job_name)
-        if create:
-            os.makedirs(self.results_dir, exist_ok=True)
-            os.makedirs(self.conversion_results_dir, exist_ok=True)
-            self._write_job_settings_snapshots()
+    def _update_project_date(self) -> None:
+        """Date stamp a new project would receive (only meaningful in "new project" mode)."""
+        if not self.rb_proj_load.isChecked():
+            self.lbl_proj_date.setText(datetime.now().strftime("%Y-%m-%d_%H-%M"))
 
-    def _write_job_settings_snapshots(self) -> None:
-        """Write the settings active right now next to the results they will produce, so each
-        job folder carries its own record of what configuration was used (in addition to the
-        shared .codoc_settings.json used to restore the UI on the next app launch)."""
+    def _leave_current_project(self) -> None:
+        """Before another project is opened: keep the settings of the one being left if it was saved
+        at least once (so edits made after the last click on Save are not lost). A project that was
+        only opened for viewing - e.g. one made by an older version, with no .json files - is not
+        given settings it never had."""
+        if self.project.is_open and os.path.isfile(self.project.docking_settings_path):
+            self._save_settings()
+
+    def _project_create_or_load(self) -> None:
+        if self.rb_proj_load.isChecked():
+            name = self.cb_prev_project.currentText().strip()
+            if not name:
+                QMessageBox.warning(self, APP_NAME, self._t("cfg_proj_select_prev"))
+                return
+            path = os.path.join(projects_root(self.app_dir), name)
+            if not os.path.isdir(path):
+                QMessageBox.warning(self, APP_NAME, self._t("cfg_proj_not_found", path=path))
+                self._refresh_previous_projects()
+                return
+            if os.path.abspath(path) != self.project.path:
+                self._leave_current_project()
+            self.project.open(path)
+            return
+        name = clean_project_name(self.ed_proj_name.text())
+        if not name:
+            QMessageBox.warning(self, APP_NAME, self._t("cfg_proj_name_required"))
+            return
+        self._leave_current_project()
         try:
-            with open(os.path.join(self.conversion_results_dir, "ligand_settings.json"), "w", encoding="utf-8") as handle:
-                json.dump(asdict(self.ligand_settings), handle, indent=2)
-            with open(os.path.join(self.results_dir, "docking_settings.json"), "w", encoding="utf-8") as handle:
-                json.dump(asdict(self.settings), handle, indent=2)
-        except OSError:
-            pass
+            path = create_project(self.app_dir, name)
+        except FileExistsError:
+            QMessageBox.warning(self, APP_NAME, self._t("cfg_proj_exists"))
+            return
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        self.ed_proj_name.clear()
+        self._refresh_previous_projects(select=os.path.basename(path))
+        self.project.open(path)
+        # A brand-new project starts with the settings now on screen, saved as its own .json files.
+        self._save_settings()
 
-    def _create_new_job(self) -> str:
-        os.makedirs(self.jobs_dir, exist_ok=True)
-        base_name = self._generate_job_name()
-        job_name = base_name
-        counter = 1
-        while os.path.isdir(self._job_dir(job_name)):
-            job_name = f"{base_name}_{counter}"
-            counter += 1
-        self._set_current_job(job_name, create=True)
-        return job_name
+    def _update_project_status(self) -> None:
+        if not hasattr(self, "lbl_proj_status"):
+            return
+        # Only the warning is shown: once a project is open, Project ID already names it.
+        self.lbl_proj_status.setVisible(not self.project.is_open)
+        self.lbl_proj_status.setText(self._t("cfg_proj_none"))
+        self.lbl_proj_status.setStyleSheet("font-size:9pt;color:#E74C3C;")
 
-    def _restore_active_job(self) -> None:
-        """Reattach to the job that was active when the app was last closed, if it still exists
-        on disk. Never creates a new JOBS folder here - that only happens when the user clicks
-        "Save settings" in Step 1 with Run type set to NEW."""
-        if self.current_job_name and os.path.isdir(self._job_dir(self.current_job_name)):
-            self._set_current_job(self.current_job_name, create=False)
-        else:
-            self.current_job_name = ""
-            self.results_dir = ""
-            self.conversion_results_dir = ""
+    def _update_window_title(self) -> None:
+        title = self._t("app_titulo")
+        self.setWindowTitle(f"{title}  -  {self.project.name}" if self.project.is_open else title)
+
+    def _refresh_project_texts(self) -> None:
+        """Texts that depend on the open project AND on the language (window title, status line)."""
+        self._update_window_title()
+        self._update_project_status()
+        if hasattr(self, "lbl_proj_id"):
+            self.lbl_proj_id.setText(self.project.name or "-")      # the project open now, not the selected one
+        if hasattr(self, "lbl_results_project"):
+            self.lbl_results_project.setText(self._t("s4_lbl_project", name=self.project.name or "-"))
+
+    def _on_project_changed(self, path: str) -> None:
+        if path:
+            QSettings("CODOC", "CODOC").setValue("last_project", os.path.basename(path))
+            self._load_project_settings()
+            self.rb_proj_load.setChecked(True)          # shows the open project in "load" mode
+            self._refresh_previous_projects(select=self.project.name)
+            self.cb_prev_project.setCurrentText(self.project.name)
+        self._refresh_project_texts()
+        self._refresh_ligand_monitor()
+        self._refresh_targets_summary()
+        self._populate_prepared_targets()
+        self._refresh_result_selectors()
 
     def _build_menu(self) -> None:
         menu_bar = self.menuBar()
@@ -1747,30 +2150,11 @@ class MainWindow(QMainWindow):
         action_home.triggered.connect(lambda: self.tabs.setCurrentIndex(0))
         menu.addAction(action_home)
 
-        action_step1 = QAction(self)
-        self._tr("menu_step1", action_step1.setText)
-        action_step1.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
-        menu.addAction(action_step1)
-
-        action_step2 = QAction(self)
-        self._tr("menu_step2", action_step2.setText)
-        action_step2.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
-        menu.addAction(action_step2)
-
-        action_step3 = QAction(self)
-        self._tr("menu_step3", action_step3.setText)
-        action_step3.triggered.connect(lambda: self.tabs.setCurrentIndex(3))
-        menu.addAction(action_step3)
-
-        action_step4 = QAction(self)
-        self._tr("menu_step4", action_step4.setText)
-        action_step4.triggered.connect(lambda: self.tabs.setCurrentIndex(4))
-        menu.addAction(action_step4)
-
-        action_step5 = QAction(self)
-        self._tr("menu_step5", action_step5.setText)
-        action_step5.triggered.connect(lambda: self.tabs.setCurrentIndex(5))
-        menu.addAction(action_step5)
+        for tab_index, menu_key in enumerate(("menu_config", "menu_step1", "menu_step2", "menu_step3", "menu_step4"), start=1):
+            action = QAction(self)
+            self._tr(menu_key, action.setText)
+            action.triggered.connect(lambda _checked=False, i=tab_index: self.tabs.setCurrentIndex(i))
+            menu.addAction(action)
 
         menu.addSeparator()
 
@@ -1787,6 +2171,11 @@ class MainWindow(QMainWindow):
         action_install.triggered.connect(self.show_requirements_installer)
         help_menu.addAction(action_install)
 
+        action_terminal = QAction(self)
+        self._tr("menu_terminal", action_terminal.setText)
+        action_terminal.triggered.connect(self.open_terminal)
+        help_menu.addAction(action_terminal)
+
         help_menu.addSeparator()
 
         action_github = QAction(self)
@@ -1794,15 +2183,20 @@ class MainWindow(QMainWindow):
         action_github.triggered.connect(self.open_github_page)
         help_menu.addAction(action_github)
 
-        help_menu.addSeparator()
-
+        # "About Us" is a first-level item of the bar (Menu | Help | About Us), not an entry of Help:
+        # an action added straight to the QMenuBar is a clickable title that triggers it.
         action_about = QAction(self)
         self._tr("menu_about", action_about.setText)
         action_about.triggered.connect(self.show_about)
-        help_menu.addAction(action_about)
+        menu_bar.addAction(action_about)
 
     def _close_from_action(self) -> None:
         self.close()
+
+    def open_terminal(self) -> None:
+        """Terminal inside the CODOC Python environment, showing the output of this session."""
+        if not codoc_terminal.open_terminal(self.app_dir, venv_paths("CODOC")["venv_dir"]):
+            QMessageBox.warning(self, APP_NAME, self._t("msg_terminal_unavailable"))
 
     def open_github_page(self) -> None:
         webbrowser.open("https://github.com/moimaian")
@@ -1811,7 +2205,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             i18n.t("msg_title_about", self._idioma),
-            i18n.t("msg_about_body", self._idioma),
+            i18n.t("msg_about_body", self._idioma) + f"\n\n{i18n.t('msg_about_version', self._idioma)}: {VERSAO}",
         )
 
     def _tr(self, chave: str, apply_fn, **kwargs) -> None:
@@ -1836,6 +2230,7 @@ class MainWindow(QMainWindow):
             target = getattr(apply_fn, "__self__", None)
             if isinstance(target, QPushButton):
                 self._ensure_button_text_fits(target)
+        self._refresh_project_texts()
 
     @staticmethod
     def _ensure_button_text_fits(button: QPushButton) -> None:
@@ -1907,6 +2302,10 @@ class MainWindow(QMainWindow):
         self._build_docking_tab()
         self._build_results_tab()
         self._apply_settings_to_widgets()
+        # Buttons are created with fixed widths sized by eye; grow any whose text is clipped
+        # (the same helper already runs after a language switch for the longer Portuguese texts).
+        for button in self.tabs.findChildren(QPushButton):
+            self._ensure_button_text_fits(button)
 
     def _build_home_tab(self) -> None:
         tab = QWidget()
@@ -1949,54 +2348,35 @@ class MainWindow(QMainWindow):
 
         hw_row = QHBoxLayout()
         hw_row.setSpacing(14)
-        home_group_width = 1100
         home_group_style = (
             "QGroupBox { background-color: transparent; border: 1.5px solid #2A4A6B; border-radius: 6px; }"
-            "QGroupBox::title { color: #2ECC71; }"
+            "QGroupBox::title { color: #29B6D8; }"
         )
 
-        def add_centered_group(widget: QWidget, group_width: int = home_group_width) -> None:
-            widget.setMinimumWidth(group_width)
-            widget.setMaximumWidth(group_width)
-            row = QHBoxLayout()
-            row.addStretch(1)
-            row.addWidget(widget)
-            row.addStretch(1)
-            inner_layout.addLayout(row)
-
-        cpu_grp = QGroupBox()
-        self._tr("home_grp_cpu", cpu_grp.setTitle)
-        cpu_grp.setStyleSheet(home_group_style)
-        cpu_form = QFormLayout(cpu_grp)
-        cpu_form.setHorizontalSpacing(16)
-        cpu_form.setVerticalSpacing(4)
-        for label_text, value_text in self._home_hw_cpu_info():
-            key_label = QLabel(label_text)
-            key_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
-            value_label = QLabel(value_text)
-            value_label.setStyleSheet("font-weight:bold;font-size:9pt;color:#C9D1D9;")
-            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            cpu_form.addRow(key_label, value_label)
-        hw_row.addWidget(cpu_grp, 1)
-
-        gpu_grp = QGroupBox()
-        self._tr("home_grp_gpu", gpu_grp.setTitle)
-        gpu_grp.setStyleSheet(home_group_style)
-        gpu_form = QFormLayout(gpu_grp)
-        gpu_form.setHorizontalSpacing(16)
-        gpu_form.setVerticalSpacing(4)
-        for label_text, value_text in self._home_hw_gpu_info():
-            key_label = QLabel(label_text)
-            key_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
-            value_label = QLabel(value_text)
-            value_label.setStyleSheet("font-weight:bold;font-size:9pt;color:#C9D1D9;")
-            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            gpu_form.addRow(key_label, value_label)
-        hw_row.addWidget(gpu_grp, 1)
+        for title_key, rows in (
+            ("home_grp_cpu", self._home_hw_cpu_info()),
+            ("home_grp_gpu", self._home_hw_gpu_info()),
+            ("home_grp_storage", self._home_hw_storage_info()),
+        ):
+            hw_grp = QGroupBox()
+            self._tr(title_key, hw_grp.setTitle)
+            hw_grp.setStyleSheet(home_group_style)
+            hw_form = QFormLayout(hw_grp)
+            hw_form.setHorizontalSpacing(16)
+            hw_form.setVerticalSpacing(4)
+            for label_text, value_text in rows:
+                key_label = QLabel(label_text)
+                key_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
+                value_label = QLabel(value_text)
+                value_label.setStyleSheet("font-weight:bold;font-size:9pt;color:#C9D1D9;")
+                value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                value_label.setWordWrap(True)
+                hw_form.addRow(key_label, value_label)
+            hw_row.addWidget(hw_grp, 1, Qt.AlignTop)
 
         hw_wrap = QWidget()
         hw_wrap.setLayout(hw_row)
-        add_centered_group(hw_wrap)
+        inner_layout.addWidget(hw_wrap)
 
         sw_grp = QGroupBox()
         self._tr("home_grp_sw", sw_grp.setTitle)
@@ -2014,12 +2394,12 @@ class MainWindow(QMainWindow):
             name_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
             version_label = QLabel(version)
             version_label.setStyleSheet(
-                f"font-weight:bold;font-size:9pt;color:{'#27AE60' if ok else '#E74C3C'};"
+                f"font-weight:bold;font-size:9pt;color:{'#C9D1D9' if ok else '#E74C3C'};"
             )
             version_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             sw_grid.addWidget(name_label, row, col)
             sw_grid.addWidget(version_label, row, col + 1)
-        add_centered_group(sw_grp)
+        inner_layout.addWidget(sw_grp)
 
         pipe_grp = QGroupBox()
         self._tr("home_grp_pipeline", pipe_grp.setTitle)
@@ -2029,11 +2409,11 @@ class MainWindow(QMainWindow):
         pipe_grid.setVerticalSpacing(6)
         pipe_grid.setColumnStretch(1, 1)
         steps = [
+            ("home_config_name", "home_config_desc"),
             ("home_step1_name", "home_step1_desc"),
             ("home_step2_name", "home_step2_desc"),
             ("home_step3_name", "home_step3_desc"),
             ("home_step4_name", "home_step4_desc"),
-            ("home_step5_name", "home_step5_desc"),
         ]
         for row, (name_key, desc_key) in enumerate(steps):
             step_label = QLabel()
@@ -2045,7 +2425,7 @@ class MainWindow(QMainWindow):
             self._tr(desc_key, desc_label.setText)
             pipe_grid.addWidget(step_label, row, 0)
             pipe_grid.addWidget(desc_label, row, 1)
-        add_centered_group(pipe_grp)
+        inner_layout.addWidget(pipe_grp)
 
         bottom_separator = QFrame()
         bottom_separator.setFrameShape(QFrame.HLine)
@@ -2068,7 +2448,7 @@ class MainWindow(QMainWindow):
 
         inner_layout.addStretch(1)
 
-        footer_label = QLabel("v1.0 beta  ·  © 2024–2026 CEB/UFPR  ·  GPL-3.0")
+        footer_label = QLabel(f"v{VERSAO}  ·  © 2024–2026 CEB/UFPR  ·  GPL-3.0")
         footer_label.setAlignment(Qt.AlignCenter)
         footer_label.setStyleSheet("font-size:8pt;color:#6E8CA8;margin-top:6px;")
         inner_layout.addWidget(footer_label)
@@ -2193,7 +2573,7 @@ class MainWindow(QMainWindow):
             rows.append(("GPU", "nvidia-smi not found"))
             return rows
         try:
-            fields = "name,memory.total,clocks.max.sm,clocks.max.memory,power.limit,driver_version"
+            fields = "name,memory.total,clocks.max.sm,clocks.max.memory,power.limit,driver_version,compute_cap"
             raw = subprocess.check_output(
                 ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
                 text=True,
@@ -2208,10 +2588,89 @@ class MainWindow(QMainWindow):
                 "Max mem clock (MHz)",
                 "TDP (W)",
                 "Driver",
+                "Compute capability",
             ]
             rows.extend(zip(labels, parts))
+            rows = [(k, v[:-3] if k == "TDP (W)" and v.endswith(".00") else v) for k, v in rows]
         except Exception as exc:
             rows.append(("Error", str(exc)))
+            return rows
+
+        # Highest CUDA version the driver supports (header of a plain nvidia-smi call).
+        try:
+            header = subprocess.check_output(
+                ["nvidia-smi"], text=True, stderr=subprocess.DEVNULL, timeout=4
+            )
+            match = re.search(r"CUDA Version:\s*([\d.]+)", header)
+            if match:
+                rows.append(("CUDA max (driver)", match.group(1)))
+        except Exception:
+            pass
+
+        # Streaming multiprocessors come from OpenCL (Max compute units = SMs on NVIDIA), since
+        # nvidia-smi does not report them. CUDA cores and FP32 throughput are estimates derived
+        # from the SM count, the compute capability and the maximum SM clock.
+        try:
+            values = dict(rows)
+            gpu_name = values.get("Model", "")
+            sm_count = next(
+                (
+                    int(dev.get("compute_units") or 0)
+                    for dev in detect_opencl_devices()
+                    if gpu_name and gpu_name in str(dev.get("device_name", ""))
+                ),
+                0,
+            )
+            if sm_count:
+                rows.append(("Multiprocessors (SM)", str(sm_count)))
+                capability = tuple(int(x) for x in values.get("Compute capability", "0.0").split(".")[:2])
+                if capability in ((8, 0), (6, 0)) or capability[0] in (7,):
+                    cores_per_sm = 64
+                else:
+                    cores_per_sm = 128
+                total_cores = sm_count * cores_per_sm
+                rows.append(("CUDA cores (est.)", str(total_cores)))
+                sm_clock = float(values.get("Max SM clock (MHz)", "0") or 0)
+                if sm_clock:
+                    rows.append(("FP32 perf. (TFLOPs, est.)", f"{total_cores * 2 * sm_clock / 1e6:.1f}"))
+        except Exception:
+            pass
+        return rows
+
+    def _home_hw_storage_info(self) -> list[tuple[str, str]]:
+        """Disk where CODOC is installed (PROJECTS/, BASE/ and every docking result live there)."""
+        rows: list[tuple[str, str]] = []
+        try:
+            usage = shutil.disk_usage(self.app_dir)
+        except Exception as exc:
+            rows.append(("Error", str(exc)))
+            return rows
+        rows.append(("Mount point", self.app_dir))
+        rows.append(("Total", f"{usage.total / 1e9:.1f} GB"))
+        rows.append(("Used", f"{usage.used / 1e9:.1f} GB ({usage.used * 100 / usage.total:.0f}%)"))
+        rows.append(("Free", f"{usage.free / 1e9:.1f} GB"))
+
+        # Media type from /sys/block/<dev>/queue/rotational (0 = SSD/NVMe, 1 = spinning disk).
+        try:
+            device = ""
+            if psutil is not None:
+                best = ""
+                for part in psutil.disk_partitions(all=False):
+                    if self.app_dir.startswith(part.mountpoint) and len(part.mountpoint) >= len(best):
+                        best, device = part.mountpoint, part.device
+            if device:
+                rows.append(("Device", device))
+                base = os.path.basename(device)
+                base = base.split("p")[0] if base.startswith("nvme") else base.rstrip("0123456789")
+                rotational = Path(f"/sys/block/{base}/queue/rotational")
+                if rotational.exists():
+                    if rotational.read_text().strip() == "1":
+                        media = "HDD (rotational)"
+                    else:
+                        media = "NVMe SSD" if base.startswith("nvme") else "SSD"
+                    rows.append(("Media type", media))
+        except Exception:
+            pass
         return rows
 
     def _home_sw_versions(self) -> list[tuple[str, str]]:
@@ -2306,114 +2765,151 @@ class MainWindow(QMainWindow):
         rows.append(("PDB2PQR / PROPKA", pdb2pqr_status))
         return rows
 
-    def _build_config_tab(self) -> None:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("title_step1"))
-
-        self.ed_ligands_dir = QLineEdit(self.ligands_dir)
-        self.ed_targets_dir = QLineEdit(self.targets_dir)
-        self.ed_jobs_dir = QLineEdit(self.jobs_dir)
-
-        settings_box = QGroupBox()
-        self._tr("s1_grp_docking_params", settings_box.setTitle)
-        settings_box.setMinimumWidth(1000)
-        settings_form = QGridLayout(settings_box)
-        settings_form.setHorizontalSpacing(18)
-        settings_form.setVerticalSpacing(8)
-        self.cb_scoring = QComboBox()
-        self.cb_scoring.addItems(["vina", "ad4", "vinardo"])
-        self.cb_split = QComboBox()
-        self.cb_split.addItems(["no", "yes"])
-        self.sp_cpu_threads = QSpinBox(); self.sp_cpu_threads.setRange(1, 512)
-        self.sp_cpu_parallel = QSpinBox(); self.sp_cpu_parallel.setRange(1, 512)
-        self.sp_exhaustiveness = QSpinBox(); self.sp_exhaustiveness.setRange(1, 32768)
-        self.sp_gpu_threads = QSpinBox(); self.sp_gpu_threads.setRange(1, 500000)
-        self.sp_poses = QSpinBox(); self.sp_poses.setRange(1, 100)
-        self.sp_min_rmsd = QDoubleSpinBox(); self.sp_min_rmsd.setRange(0.0, 100.0); self.sp_min_rmsd.setDecimals(3)
-        self.sp_energy = QDoubleSpinBox(); self.sp_energy.setRange(0.0, 100.0); self.sp_energy.setDecimals(3)
-        self.cb_opencl_platform = QComboBox()
-        self.cb_opencl_device = QComboBox()
-        self.cb_opencl_platform.currentIndexChanged.connect(self._update_opencl_device_choices)
-
-        # Moved here from the former "Docking execution" group in Step 4.
-        self.cb_docking_type = QComboBox(); self.cb_docking_type.addItems(["Rigid", "Flexible"])
-        self.cb_processing_type = QComboBox(); self.cb_processing_type.addItems(["CPU", "GPU"])
-        self.cb_docking_mode = QComboBox(); self.cb_docking_mode.addItems(["normal", "score_only", "local_only"])
-        self.cb_run_type = QComboBox(); self.cb_run_type.addItems(["NEW", "RESTART"])
-        self.cb_existing_result = QComboBox()
-        self.cb_processing_type.currentTextChanged.connect(self._toggle_docking_mode_options)
-        self.cb_run_type.currentTextChanged.connect(self._toggle_restart_combo)
-
-        param_rows = [
-            ("s1_lbl_scoring_function", self.cb_scoring, "s1_lbl_split_results", self.cb_split),
-            ("s1_lbl_cpu_threads", self.sp_cpu_threads, "s1_lbl_cpu_parallelism", self.sp_cpu_parallel),
-            ("s1_lbl_exhaustiveness", self.sp_exhaustiveness, "s1_lbl_gpu_threads", self.sp_gpu_threads),
-            ("s1_lbl_poses", self.sp_poses, "s1_lbl_energy_range", self.sp_energy),
-            ("s1_lbl_min_rmsd", self.sp_min_rmsd, "s1_lbl_opencl_platform", self.cb_opencl_platform),
-            ("s1_lbl_docking_type", self.cb_docking_type, "s1_lbl_processing_type", self.cb_processing_type),
-            ("s1_lbl_vina_mode", self.cb_docking_mode, "s1_lbl_run_type", self.cb_run_type),
-        ]
-        for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(param_rows):
-            label_left_widget = QLabel(); self._tr(key_left, label_left_widget.setText)
-            label_right_widget = QLabel(); self._tr(key_right, label_right_widget.setText)
-            settings_form.addWidget(label_left_widget, row_idx, 0)
-            settings_form.addWidget(widget_left, row_idx, 1)
-            settings_form.addWidget(label_right_widget, row_idx, 2)
-            settings_form.addWidget(widget_right, row_idx, 3)
-        final_param_row = len(param_rows)
-        lbl_opencl_device = QLabel(); self._tr("s1_lbl_opencl_device", lbl_opencl_device.setText)
-        settings_form.addWidget(lbl_opencl_device, final_param_row, 0)
-        settings_form.addWidget(self.cb_opencl_device, final_param_row, 1, 1, 3)
-        lbl_result_name = QLabel(); self._tr("s1_lbl_result_name", lbl_result_name.setText)
-        settings_form.addWidget(lbl_result_name, final_param_row + 1, 0)
-        settings_form.addWidget(self.cb_existing_result, final_param_row + 1, 1, 1, 3)
-        lbl_ligands = QLabel(); self._tr("s1_lbl_ligands", lbl_ligands.setText)
-        settings_form.addWidget(lbl_ligands, final_param_row + 2, 0)
-        settings_form.addWidget(self._path_row(self.ed_ligands_dir, self._browse_ligands_dir), final_param_row + 2, 1, 1, 3)
-        lbl_targets = QLabel(); self._tr("s1_lbl_targets", lbl_targets.setText)
-        settings_form.addWidget(lbl_targets, final_param_row + 3, 0)
-        settings_form.addWidget(self._path_row(self.ed_targets_dir, self._browse_targets_dir), final_param_row + 3, 1, 1, 3)
-        lbl_jobs = QLabel(); self._tr("s1_lbl_jobs", lbl_jobs.setText)
-        settings_form.addWidget(lbl_jobs, final_param_row + 4, 0)
-        settings_form.addWidget(self._path_row(self.ed_jobs_dir, self._browse_jobs_dir), final_param_row + 4, 1, 1, 3)
-        self._load_opencl_choices()
-        self._toggle_docking_mode_options()
-        self._toggle_restart_combo()
-        settings_wrap = QHBoxLayout()
-        settings_wrap.addStretch(1)
-        settings_wrap.addWidget(settings_box)
-        settings_wrap.addStretch(1)
-        layout.addLayout(settings_wrap)
-
+    def _settings_buttons_row(self) -> QHBoxLayout:
+        """Save/Reload settings buttons, centred under the Performance Options group."""
         row = QHBoxLayout()
         row.addStretch(1)
         btn_save = QPushButton()
         btn_save.setFixedWidth(180)
-        self._tr("s1_btn_save_settings", btn_save.setText)
-        btn_save.clicked.connect(lambda: self._save_settings(manage_job=True))
+        self._tr("cfg_btn_save_settings", btn_save.setText)
+        btn_save.clicked.connect(self._save_settings_clicked)
         btn_reload = QPushButton()
         btn_reload.setFixedWidth(180)
         btn_reload.setStyleSheet(_SS_BTN_SECONDARY)
-        self._tr("s1_btn_reload_settings", btn_reload.setText)
-        btn_reload.clicked.connect(self._load_settings)
+        self._tr("cfg_btn_reload_settings", btn_reload.setText)
+        btn_reload.clicked.connect(self._reload_settings_clicked)
         row.addWidget(btn_save)
         row.addWidget(btn_reload)
         row.addStretch(1)
-        layout.addLayout(row)
+        return row
+
+    def _build_config_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addWidget(self._title("title_config"))
+
+        config_group_width = 1000
+
+        def add_centered_group(widget: QWidget, group_width: int = config_group_width) -> None:
+            widget.setMinimumWidth(group_width)
+            widget.setMaximumWidth(group_width)
+            row_wrap = QHBoxLayout()
+            row_wrap.addStretch(1)
+            row_wrap.addWidget(widget)
+            row_wrap.addStretch(1)
+            layout.addLayout(row_wrap)
+
+        # ---------------------------------------------------------------- Projects
+        # Same structure as the CODYN/CODEEP "Projects" group: create a PROJECTS/<date>_<name>/ folder or
+        # reopen a previous one (its ligands, targets, results and the .json settings of every step).
+        proj_box = QGroupBox()
+        self._tr("cfg_grp_projects", proj_box.setTitle)
+        proj_form = QFormLayout(proj_box)
+        proj_form.setHorizontalSpacing(18)
+        proj_form.setVerticalSpacing(10)
+        self.rb_proj_new, self.rb_proj_load = QCheckBox(), QCheckBox()
+        self._tr("cfg_proj_new", self.rb_proj_new.setText)
+        self._tr("cfg_proj_load", self.rb_proj_load.setText)
+        self._proj_modes = QButtonGroup(self)          # the two check boxes are mutually exclusive
+        self._proj_modes.setExclusive(True)
+        self._proj_modes.addButton(self.rb_proj_new)
+        self._proj_modes.addButton(self.rb_proj_load)
+        self.rb_proj_new.setChecked(True)
+        self.lbl_proj_date = QLabel()
+        self.lbl_proj_date.setStyleSheet("font-weight:bold;")
+        self.ed_proj_name = QLineEdit()
+        self.ed_proj_name.setMaximumWidth(340)
+        self._tr("cfg_proj_ph_name", self.ed_proj_name.setPlaceholderText)
+        self.cb_prev_project = QComboBox()
+        self.cb_prev_project.setMaximumWidth(340)
+        self.cb_prev_project.setEnabled(False)
+        self._tr("cfg_proj_prev_tip", self.cb_prev_project.setToolTip)
+        self.lbl_proj_id = QLabel("-")
+        self.lbl_proj_id.setStyleSheet("font-weight:bold;color:#29B6D8;")
+        self.lbl_proj_status = QLabel()
+        self.lbl_proj_status.setWordWrap(True)
+        self.lbl_proj_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        btn_project = QPushButton()
+        btn_project.setFixedSize(230, 38)
+        self._tr("cfg_proj_btn", btn_project.setText)
+
+        def add_form_label_row(key: str, widget: QWidget) -> None:
+            label = QLabel(); self._tr(key, label.setText)
+            proj_form.addRow(label, widget)
+
+        add_form_label_row("cfg_proj_date", self.lbl_proj_date)
+        proj_form.addRow(self.rb_proj_new)
+        add_form_label_row("cfg_proj_name", self.ed_proj_name)
+        proj_form.addRow(self.rb_proj_load)
+        add_form_label_row("cfg_proj_prev", self.cb_prev_project)
+        add_form_label_row("cfg_proj_id", self.lbl_proj_id)
+        btn_wrap = QWidget()
+        btn_wrap_layout = QHBoxLayout(btn_wrap)
+        btn_wrap_layout.setContentsMargins(0, 6, 0, 0)
+        btn_wrap_layout.addStretch(1)
+        btn_wrap_layout.addWidget(btn_project)
+        btn_wrap_layout.addStretch(1)
+        proj_form.addRow(btn_wrap)
+        proj_form.addRow(self.lbl_proj_status)
+        self.rb_proj_new.toggled.connect(self._sync_project_mode)
+        self.ed_proj_name.textChanged.connect(self._update_project_date)
+        btn_project.clicked.connect(self._project_create_or_load)
+
+        # ---------------------------------------------------------------- Performance Options
+        perf_box = QGroupBox()
+        self._tr("cfg_grp_performance", perf_box.setTitle)
+        perf_form = QFormLayout(perf_box)
+        perf_form.setHorizontalSpacing(18)
+        perf_form.setVerticalSpacing(10)
+        perf_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.cb_processing_type = QComboBox(); self.cb_processing_type.addItems(["CPU", "GPU"])
+        self.sp_cpu_threads = QSpinBox(); self.sp_cpu_threads.setRange(1, 512)
+        self.sp_gpu_threads = QSpinBox(); self.sp_gpu_threads.setRange(1, 500000)
+        self.cb_opencl_platform = QComboBox()
+        self.cb_opencl_device = QComboBox()
+        self.cb_opencl_platform.currentIndexChanged.connect(self._update_opencl_device_choices)
+        self.cb_processing_type.currentTextChanged.connect(self._toggle_docking_mode_options)
+        for key, widget in (
+            ("cfg_lbl_processing_type", self.cb_processing_type),
+            ("cfg_lbl_cpu_threads", self.sp_cpu_threads),
+            ("cfg_lbl_gpu_threads", self.sp_gpu_threads),
+            ("cfg_lbl_opencl_platform", self.cb_opencl_platform),
+            ("cfg_lbl_opencl_device", self.cb_opencl_device),
+        ):
+            label = QLabel(); self._tr(key, label.setText)
+            perf_form.addRow(label, widget)
+
+        # Projects, Performance Options and the Save/Reload buttons stack in one centred column that takes
+        # half of the window width (both groups have that same width).
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(10)
+        left_col.addWidget(proj_box)
+        left_col.addWidget(perf_box)
+        left_col.addLayout(self._settings_buttons_row())
+        left_col.addStretch(1)
+        top_row.addStretch(1)
+        top_row.addLayout(left_col, 2)         # stretch 1 : 2 : 1 keeps the column at half the window, centred
+        top_row.addStretch(1)
+        layout.addLayout(top_row)
+
+        self._load_opencl_choices()
 
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(0, 2))
-        step1_tab_index = self.tabs.addTab(tab, "")
-        self._tr("tab_step1", lambda txt, i=step1_tab_index: self.tabs.setTabText(i, txt))
-        self._refresh_result_folders()
+        config_tab_index = self.tabs.addTab(tab, "")
+        self._tr("tab_config", lambda txt, i=config_tab_index: self.tabs.setTabText(i, txt))
+        self._refresh_previous_projects()
+        self._sync_project_mode()
 
     def _build_ligands_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("title_step2"))
+        layout.addWidget(self._title("title_step1"))
 
         ligands_group_width = 1000
+        ligand_monitor_width = 280
 
         def add_centered_group(widget: QWidget, group_width: int = ligands_group_width) -> None:
             widget.setMinimumWidth(group_width)
@@ -2425,10 +2921,20 @@ class MainWindow(QMainWindow):
             layout.addLayout(row_wrap)
 
         box = QGroupBox()
-        self._tr("s2_grp_prep_settings", box.setTitle)
+        self._tr("s1_grp_prep_settings", box.setTitle)
         box_layout = QVBoxLayout(box)
-        self.lbl_lig_summary = QLabel()
-        box_layout.addWidget(self.lbl_lig_summary)
+
+        # "Ligands": Browse opens the BASE folder; the chosen files / folders are copied into the
+        # project's CONVERSION/LIGANDS (the common LIGANDS folder no longer exists).
+        self.ed_ligands = QLineEdit()
+        self.ed_ligands.setReadOnly(True)
+        self._tr("s1_ph_ligands", self.ed_ligands.setPlaceholderText)
+        self._tr("s1_tip_ligands", self.ed_ligands.setToolTip)
+        ligands_row = QHBoxLayout()
+        lbl_ligands = QLabel(); self._tr("s1_lbl_ligands", lbl_ligands.setText)
+        ligands_row.addWidget(lbl_ligands)
+        ligands_row.addWidget(self._path_row(self.ed_ligands, self._browse_ligand_sources), 1)
+        box_layout.addLayout(ligands_row)
 
         settings_form = QGridLayout()
         self.sp_lig_file_size = QSpinBox(); self.sp_lig_file_size.setRange(1, 1000000)
@@ -2451,10 +2957,9 @@ class MainWindow(QMainWindow):
         self.cb_lig_min_algorithm.addItems(["Conjugate Gradient", "Steepest Descent"])
         self.cb_lig_min_algorithm.setToolTip(
             "Local optimization algorithm used to minimize ligand geometry.\n"
-            "Only affects the OpenBabel conversion engine. The RDKit engine (RDKit + Meeko +\n"
-            "Dimorphite-DL, no OpenBabel involved) uses RDKit's own MMFF/UFF minimizer, which has\n"
-            "no user-selectable steepest-descent/conjugate-gradient switch - disabled here whenever\n"
-            "RDKit is the selected conversion engine."
+            "Only affects conversions done by OpenBabel (the selected engine, or the fallback of a\n"
+            "failed RDKit conversion). RDKit + Meeko + Dimorphite-DL uses RDKit's own MMFF/UFF\n"
+            "minimizer, which has no steepest-descent/conjugate-gradient switch."
         )
         self.cb_lig_min_forcefield = QComboBox()
         self.cb_lig_min_forcefield.addItems(["GAFF", "Ghemical", "MMFF94", "MMFF94s", "UFF"])
@@ -2467,22 +2972,25 @@ class MainWindow(QMainWindow):
         )
         self.ed_lig_reject.setToolTip(
             "Regex of element symbols to reject during PDBQT validation (see 'Reject invalid\n"
-            "PDBQT'). Only used by the OpenBabel engine's validator - the RDKit engine validates\n"
-            "chemically instead (reconstructing the molecule and running RDKit's sanitizer), so\n"
-            "this field is disabled whenever RDKit is the selected conversion engine."
+            "PDBQT'). Applied to the PDBQT files written by OpenBabel (the selected engine or the\n"
+            "fallback of a failed RDKit conversion); the files written by RDKit/Meeko are validated\n"
+            "chemically instead (reconstructing the molecule and running RDKit's sanitizer)."
         )
 
         # These 9 widgets stay in "Ligand preparation settings"; the 8 druggability/Lipinski
         # ones below move to their own "Druggability Filter" group. Each group gets its own
         # uniform width, sized to its own widest label/value, now that they are visually separate.
-        lig_prep_setting_boxes = [
+        # The group shares the 1000 px row with the Monitor, so its boxes are kept narrow: the left
+        # column holds numbers and the engine name, the right one the widest texts (algorithm names).
+        for box_widget in (
             self.sp_lig_file_size, self.sp_lig_ph, self.sp_lig_max_folder,
-            self.ed_lig_reject, self.cb_lig_conversion_engine, self.sp_lig_workers,
-            self.sp_lig_steps, self.cb_lig_min_algorithm, self.cb_lig_min_forcefield,
-        ]
-        lig_prep_box_width = max(w.sizeHint().width() for w in lig_prep_setting_boxes)
-        for box_widget in lig_prep_setting_boxes:
-            box_widget.setFixedWidth(lig_prep_box_width)
+            self.cb_lig_conversion_engine, self.sp_lig_workers,
+        ):
+            box_widget.setFixedWidth(100)
+        for box_widget in (
+            self.sp_lig_steps, self.ed_lig_reject, self.cb_lig_min_algorithm, self.cb_lig_min_forcefield,
+        ):
+            box_widget.setFixedWidth(180)
 
         lig_druggability_boxes = [
             self.sp_lig_mw_min, self.sp_lig_mw_max, self.sp_lig_logp_min, self.sp_lig_logp_max,
@@ -2492,37 +3000,40 @@ class MainWindow(QMainWindow):
         for box_widget in lig_druggability_boxes:
             box_widget.setFixedWidth(lig_druggability_box_width)
 
-        # (label i18n key) -> (label widget, field widget), so _sync_lig_conversion_settings_state
-        # can enable/disable a field together with its caption by key, whichever group it lives in.
-        self._lig_field_pairs: dict[str, tuple[QLabel, QWidget]] = {}
-
-        def add_field_row(target_form: QGridLayout, row_idx: int, label_col: int, label_key: str, widget: QWidget) -> None:
+        def add_field_row(
+            target_form: QGridLayout, row_idx: int, label_col: int, label_key: str, widget: QWidget,
+            label_max_width: int = 0,
+        ) -> None:
             label_widget = QLabel(); self._tr(label_key, label_widget.setText)
+            if label_max_width:
+                # long captions (more so in Portuguese) wrap instead of widening the group
+                label_widget.setWordWrap(True)
+                label_widget.setMaximumWidth(label_max_width)
             target_form.addWidget(label_widget, row_idx, label_col)
             target_form.addWidget(widget, row_idx, label_col + 1)
-            self._lig_field_pairs[label_key] = (label_widget, widget)
 
-        # 9 fields regrouped into 3 balanced columns of 3 rows each now that the druggability
-        # fields have their own group and the never-used speed/timeout fields are gone.
+        # 9 fields in 2 columns (5 + 4): conversion/general settings on the left, minimization and
+        # the validation regex on the right. Three columns did not fit in the
+        # 1000 px group (labels overlapped the neighbouring field and the last column was clipped).
         column_1 = [
-            ("s2_lbl_conversion_engine", self.cb_lig_conversion_engine),
-            ("s2_lbl_max_folder", self.sp_lig_max_folder),
-            ("s2_lbl_min_file_size", self.sp_lig_file_size),
+            ("s1_lbl_conversion_engine", self.cb_lig_conversion_engine),
+            ("s1_lbl_max_folder", self.sp_lig_max_folder),
+            ("s1_lbl_min_file_size", self.sp_lig_file_size),
+            ("s1_lbl_workers", self.sp_lig_workers),
+            ("s1_lbl_ph", self.sp_lig_ph),
         ]
         column_2 = [
-            ("s2_lbl_workers", self.sp_lig_workers),
-            ("s2_lbl_min_algorithm", self.cb_lig_min_algorithm),
-            ("s2_lbl_min_forcefield", self.cb_lig_min_forcefield),
+            ("s1_lbl_min_algorithm", self.cb_lig_min_algorithm),
+            ("s1_lbl_min_forcefield", self.cb_lig_min_forcefield),
+            ("s1_lbl_min_steps", self.sp_lig_steps),
+            ("s1_lbl_rejected", self.ed_lig_reject),
         ]
-        column_3 = [
-            ("s2_lbl_min_steps", self.sp_lig_steps),
-            ("s2_lbl_ph", self.sp_lig_ph),
-            ("s2_lbl_rejected", self.ed_lig_reject),
-        ]
-        for column_idx, column in enumerate((column_1, column_2, column_3)):
-            label_col = column_idx * 2
+        settings_form.setHorizontalSpacing(8)            # label -> box
+        settings_form.setColumnMinimumWidth(2, 16)       # gap between the two columns of fields
+        for column_idx, column in enumerate((column_1, column_2)):
+            label_col = column_idx * 3
             for row_idx, (label_key, widget) in enumerate(column):
-                add_field_row(settings_form, row_idx, label_col, label_key, widget)
+                add_field_row(settings_form, row_idx, label_col, label_key, widget, label_max_width=190)
         box_layout.addLayout(settings_form)
 
         row = QHBoxLayout()
@@ -2531,58 +3042,101 @@ class MainWindow(QMainWindow):
         btn_refresh = QPushButton()
         btn_refresh.setFixedWidth(220)
         btn_refresh.setStyleSheet(_SS_BTN_SECONDARY)
-        self._tr("s2_btn_refresh_summary", btn_refresh.setText)
-        btn_refresh.clicked.connect(self._refresh_ligand_summary)
+        self._tr("s1_btn_refresh_monitor", btn_refresh.setText)
+        btn_refresh.clicked.connect(self._refresh_ligand_monitor)
+        btn_save_lig = QPushButton()
+        btn_save_lig.setFixedWidth(220)
+        self._tr("s1_btn_save_lig_settings", btn_save_lig.setText)
+        btn_save_lig.clicked.connect(self._save_settings_clicked)
+        row.addWidget(btn_refresh)
+        row.addWidget(btn_save_lig)
+        box_layout.addLayout(row)
+
+        # Monitor (right of "Ligand preparation settings"): how many ligands each stage holds,
+        # counted over every group folder (each one is a databank or a piece of one that exceeded
+        # "Max ligands/folder"). Refreshed while an action runs and whenever one finishes.
+        monitor_box = QGroupBox()
+        self._tr("s1_grp_monitor", monitor_box.setTitle)
+        monitor_box.setFixedWidth(ligand_monitor_width)
+        monitor_layout = QVBoxLayout(monitor_box)
+        self.tbl_lig_monitor = QTableWidget(len(self._LIGAND_MONITOR_ROWS), 2)
+        self.tbl_lig_monitor.verticalHeader().setVisible(False)
+        self.tbl_lig_monitor.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tbl_lig_monitor.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tbl_lig_monitor.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_lig_monitor.setSelectionMode(QAbstractItemView.NoSelection)
+        self.tbl_lig_monitor.setFocusPolicy(Qt.NoFocus)
+        self.tbl_lig_monitor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._tr("s1_mon_col_type", lambda txt: self.tbl_lig_monitor.setHorizontalHeaderItem(0, QTableWidgetItem(txt)))
+        self._tr("s1_mon_col_count", lambda txt: self.tbl_lig_monitor.setHorizontalHeaderItem(1, QTableWidgetItem(txt)))
+        for row_idx, (label_key, _counter) in enumerate(self._LIGAND_MONITOR_ROWS):
+            name_item = QTableWidgetItem()
+            self.tbl_lig_monitor.setItem(row_idx, 0, name_item)
+            self._tr(label_key, name_item.setText)
+            count_item = QTableWidgetItem("-")
+            count_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.tbl_lig_monitor.setItem(row_idx, 1, count_item)
+        # All rows always show: they share the table's height, which never goes below what the font needs.
+        self.tbl_lig_monitor.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        row_min = self.tbl_lig_monitor.fontMetrics().height() + 10
+        self.tbl_lig_monitor.setMinimumHeight(
+            row_min * (self.tbl_lig_monitor.rowCount() + 1) + 2 * self.tbl_lig_monitor.frameWidth()
+        )
+        monitor_layout.addWidget(self.tbl_lig_monitor, 1)
         btn_open = QPushButton()
         btn_open.setFixedWidth(220)
         btn_open.setStyleSheet(_SS_BTN_SECONDARY)
-        self._tr("s2_btn_open_ligands_folder", btn_open.setText)
+        self._tr("s1_btn_open_ligands_folder", btn_open.setText)
         btn_open.clicked.connect(lambda: self._open_path(self.ligands_dir))
-        btn_save_lig = QPushButton()
-        btn_save_lig.setFixedWidth(220)
-        self._tr("s2_btn_save_lig_settings", btn_save_lig.setText)
-        btn_save_lig.clicked.connect(self._save_settings)
-        row.addWidget(btn_refresh)
-        row.addWidget(btn_open)
-        row.addWidget(btn_save_lig)
-        box_layout.addLayout(row)
-        add_centered_group(box)
+        monitor_layout.addWidget(btn_open, 0, Qt.AlignHCenter)
+
+        self.ligand_monitor_timer = QTimer(self)
+        self.ligand_monitor_timer.setInterval(2000)
+        self.ligand_monitor_timer.timeout.connect(self._refresh_ligand_monitor)
+
+        settings_row = QHBoxLayout()
+        settings_row.setSpacing(14)
+        settings_row.addWidget(box, 1)        # same height as the Monitor next to it
+        settings_row.addWidget(monitor_box, 0)
+        settings_wrap = QWidget()
+        settings_wrap.setLayout(settings_row)
+        add_centered_group(settings_wrap)
 
         druggability_box = QGroupBox()
-        self._tr("s2_grp_druggability", druggability_box.setTitle)
+        self._tr("s1_grp_druggability", druggability_box.setTitle)
         druggability_form = QGridLayout(druggability_box)
         druggability_rows = [
-            ("s2_lbl_mw_min", self.sp_lig_mw_min, "s2_lbl_mw_max", self.sp_lig_mw_max),
-            ("s2_lbl_logp_min", self.sp_lig_logp_min, "s2_lbl_logp_max", self.sp_lig_logp_max),
-            ("s2_lbl_hdonor_max", self.sp_lig_hd, "s2_lbl_hacceptor_max", self.sp_lig_ha),
-            ("s2_lbl_rot_max", self.sp_lig_rot, "s2_lbl_tpsa_max", self.sp_lig_tpsa),
+            ("s1_lbl_mw_min", self.sp_lig_mw_min, "s1_lbl_mw_max", self.sp_lig_mw_max),
+            ("s1_lbl_logp_min", self.sp_lig_logp_min, "s1_lbl_logp_max", self.sp_lig_logp_max),
+            ("s1_lbl_hdonor_max", self.sp_lig_hd, "s1_lbl_hacceptor_max", self.sp_lig_ha),
+            ("s1_lbl_rot_max", self.sp_lig_rot, "s1_lbl_tpsa_max", self.sp_lig_tpsa),
         ]
         for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(druggability_rows):
             add_field_row(druggability_form, row_idx, 0, key_left, widget_left)
             add_field_row(druggability_form, row_idx, 2, key_right, widget_right)
 
         btn_druggability_filter = QPushButton()
-        self._tr("s2_act_druggability_filter", btn_druggability_filter.setText)
+        self._tr("s1_act_druggability_filter", btn_druggability_filter.setText)
         btn_druggability_filter.setFixedWidth(255)
         btn_druggability_filter.clicked.connect(lambda: self._run_ligand_tool("druggability_filter"))
         druggability_form.addWidget(btn_druggability_filter, len(druggability_rows), 0, 1, 4, Qt.AlignCenter)
         add_centered_group(druggability_box)
 
         actions_box = QGroupBox()
-        self._tr("s2_grp_actions", actions_box.setTitle)
+        self._tr("s1_grp_actions", actions_box.setTitle)
         actions_layout = QGridLayout(actions_box)
         action_button_width = 255
         # (label key, handler, gray) - "gray" applies _SS_BTN_SECONDARY; the one exception left at
-        # its default green styling is Convert ligands to PDBQT, the main/primary action here.
+        # its default accent styling is Convert ligands to PDBQT, the main/primary action here.
         ligand_actions = [
-            ("s2_act_split_multimodel", lambda: self._run_ligand_tool("split_multimodel"), True),
-            ("s2_act_split_large_folders", lambda: self._run_ligand_tool("split_large_folders"), True),
-            ("s2_act_move_empty", lambda: self._run_ligand_tool("move_empty"), True),
-            ("s2_act_convert_pdbqt", lambda: self._run_ligand_tool("convert_pdbqt"), False),
-            ("s2_act_reject_pdbqt", lambda: self._run_ligand_tool("reject_pdbqt"), True),
-            ("s2_act_recover_pdbqt", lambda: self._run_ligand_tool("recover_pdbqt"), True),
-            ("s2_act_generate_lipinski", lambda: self._run_ligand_tool("generate_lipinski"), True),
-            ("s2_act_fix_macrocycles", lambda: self._run_ligand_tool("fix_macrocycles"), True),
+            ("s1_act_split_multimodel", lambda: self._run_ligand_tool("split_multimodel"), True),
+            ("s1_act_split_large_folders", lambda: self._run_ligand_tool("split_large_folders"), True),
+            ("s1_act_move_empty", lambda: self._run_ligand_tool("move_empty"), True),
+            ("s1_act_convert_pdbqt", lambda: self._run_ligand_tool("convert_pdbqt"), False),
+            ("s1_act_reject_pdbqt", lambda: self._run_ligand_tool("reject_pdbqt"), True),
+            ("s1_act_recover_pdbqt", lambda: self._run_ligand_tool("recover_pdbqt"), True),
+            ("s1_act_generate_lipinski", lambda: self._run_ligand_tool("generate_lipinski"), True),
+            ("s1_act_fix_macrocycles", lambda: self._run_ligand_tool("fix_macrocycles"), True),
         ]
         for idx, (label_key, handler, is_gray) in enumerate(ligand_actions):
             button = QPushButton()
@@ -2592,14 +3146,14 @@ class MainWindow(QMainWindow):
                 button.setStyleSheet(_SS_BTN_SECONDARY)
             button.clicked.connect(handler)
             actions_layout.addWidget(button, idx // 3, idx % 3)
-            if label_key == "s2_act_fix_macrocycles":
+            if label_key == "s1_act_fix_macrocycles":
                 self.btn_lig_fix_macrocycles = button
         actions_layout.setHorizontalSpacing(12)
         actions_layout.setVerticalSpacing(10)
         actions_layout.setAlignment(Qt.AlignCenter)
         add_centered_group(actions_box)
 
-        # "Fix macrocycles for GPU" only matters for a GPU docking run (Step 1 Processing type) -
+        # "Fix macrocycles for GPU" only matters for a GPU docking run (CONFIG Processing type) -
         # enabled/disabled in sync with that combo instead of being always-on regardless of it.
         self.cb_processing_type.currentTextChanged.connect(self._sync_fix_macrocycles_button)
         self._sync_fix_macrocycles_button()
@@ -2613,14 +3167,14 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(1, 3))
         step2_tab_index = self.tabs.addTab(tab, "")
-        self._tr("tab_step2", lambda txt, i=step2_tab_index: self.tabs.setTabText(i, txt))
+        self._tr("tab_step1", lambda txt, i=step2_tab_index: self.tabs.setTabText(i, txt))
         self._sync_lig_conversion_settings_state()
-        self._refresh_ligand_summary()
+        self._refresh_ligand_monitor()
 
     def _build_targets_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("title_step3"))
+        layout.addWidget(self._title("title_step2"))
 
         targets_group_width = 1000
         target_field_width = 320
@@ -2636,7 +3190,7 @@ class MainWindow(QMainWindow):
             layout.addLayout(row_wrap)
 
         target_box = QGroupBox()
-        self._tr("s3_grp_prepare_target", target_box.setTitle)
+        self._tr("s2_grp_prepare_target", target_box.setTitle)
         target_form = QFormLayout(target_box)
         target_form.setHorizontalSpacing(18)
         target_form.setVerticalSpacing(14)
@@ -2647,12 +3201,12 @@ class MainWindow(QMainWindow):
 
         self.ed_target_name = QLineEdit()
         self.ed_target_name.setFixedWidth(target_field_width)
-        self._tr("s3_ph_target_name", self.ed_target_name.setPlaceholderText)
+        self._tr("s2_ph_target_name", self.ed_target_name.setPlaceholderText)
 
         self.ed_target_file = QLineEdit()
         self.ed_target_file.setFixedWidth(target_field_width)
         btn_choose_target = QPushButton()
-        self._tr("s3_btn_choose_target", btn_choose_target.setText)
+        self._tr("s2_btn_choose_target", btn_choose_target.setText)
         btn_choose_target.setFixedWidth(target_button_width)
         btn_choose_target.clicked.connect(self._choose_target_file)
         row_target = QHBoxLayout()
@@ -2677,7 +3231,7 @@ class MainWindow(QMainWindow):
         self.ed_target_rigid_file = QLineEdit()
         self.ed_target_rigid_file.setFixedWidth(target_field_width)
         btn_choose_rigid = QPushButton()
-        self._tr("s3_btn_choose_rigid", btn_choose_rigid.setText)
+        self._tr("s2_btn_choose_rigid", btn_choose_rigid.setText)
         btn_choose_rigid.setFixedWidth(target_button_width)
         btn_choose_rigid.clicked.connect(lambda: self._choose_pdbqt_file(self.ed_target_rigid_file, "Select rigid receptor PDBQT"))
         row_rigid = QHBoxLayout()
@@ -2691,7 +3245,7 @@ class MainWindow(QMainWindow):
         self.ed_target_flex_file = QLineEdit()
         self.ed_target_flex_file.setFixedWidth(target_field_width)
         btn_choose_flex = QPushButton()
-        self._tr("s3_btn_choose_flex", btn_choose_flex.setText)
+        self._tr("s2_btn_choose_flex", btn_choose_flex.setText)
         btn_choose_flex.setFixedWidth(target_button_width)
         btn_choose_flex.clicked.connect(lambda: self._choose_pdbqt_file(self.ed_target_flex_file, "Select flexible receptor PDBQT"))
         row_flex = QHBoxLayout()
@@ -2705,7 +3259,7 @@ class MainWindow(QMainWindow):
         self.ed_target_grid_file = QLineEdit()
         self.ed_target_grid_file.setFixedWidth(target_field_width)
         btn_choose_grid = QPushButton()
-        self._tr("s3_btn_choose_grid", btn_choose_grid.setText)
+        self._tr("s2_btn_choose_grid", btn_choose_grid.setText)
         btn_choose_grid.setFixedWidth(target_button_width)
         btn_choose_grid.clicked.connect(lambda: self._choose_grid_file(self.ed_target_grid_file, "Select grid.txt (optional)"))
         row_grid = QHBoxLayout()
@@ -2729,9 +3283,9 @@ class MainWindow(QMainWindow):
         grid_params_grid.setHorizontalSpacing(18)
         grid_params_grid.setVerticalSpacing(14)
         grid_param_rows = [
-            ("s3_lbl_grid_center_x", self.sp_center_x, "s3_lbl_grid_x_size", self.sp_grid_x),
-            ("s3_lbl_grid_center_y", self.sp_center_y, "s3_lbl_grid_y_size", self.sp_grid_y),
-            ("s3_lbl_grid_center_z", self.sp_center_z, "s3_lbl_grid_z_size", self.sp_grid_z),
+            ("s2_lbl_grid_center_x", self.sp_center_x, "s2_lbl_grid_x_size", self.sp_grid_x),
+            ("s2_lbl_grid_center_y", self.sp_center_y, "s2_lbl_grid_y_size", self.sp_grid_y),
+            ("s2_lbl_grid_center_z", self.sp_center_z, "s2_lbl_grid_z_size", self.sp_grid_z),
         ]
         for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(grid_param_rows):
             label_left_widget = QLabel(); self._tr(key_left, label_left_widget.setText)
@@ -2744,36 +3298,36 @@ class MainWindow(QMainWindow):
         grid_params_widget = QWidget()
         grid_params_widget.setLayout(grid_params_grid)
 
-        lbl_prep_mode = QLabel(); self._tr("s3_lbl_prep_mode", lbl_prep_mode.setText)
+        lbl_prep_mode = QLabel(); self._tr("s2_lbl_prep_mode", lbl_prep_mode.setText)
         target_form.addRow(lbl_prep_mode, self.cb_target_mode)
-        lbl_target_name = QLabel(); self._tr("s3_lbl_target_name", lbl_target_name.setText)
+        lbl_target_name = QLabel(); self._tr("s2_lbl_target_name", lbl_target_name.setText)
         target_form.addRow(lbl_target_name, self.ed_target_name)
-        lbl_target_file = QLabel(); self._tr("s3_lbl_target_file", lbl_target_file.setText)
+        lbl_target_file = QLabel(); self._tr("s2_lbl_target_file", lbl_target_file.setText)
         target_form.addRow(lbl_target_file, wrap_target)
-        lbl_protonation_ph = QLabel(); self._tr("s3_lbl_protonation_ph", lbl_protonation_ph.setText)
+        lbl_protonation_ph = QLabel(); self._tr("s2_lbl_protonation_ph", lbl_protonation_ph.setText)
         target_form.addRow(lbl_protonation_ph, self.sp_target_ph)
-        lbl_rigid_receptor = QLabel(); self._tr("s3_lbl_rigid_receptor", lbl_rigid_receptor.setText)
+        lbl_rigid_receptor = QLabel(); self._tr("s2_lbl_rigid_receptor", lbl_rigid_receptor.setText)
         target_form.addRow(lbl_rigid_receptor, wrap_rigid)
-        lbl_flex_receptor = QLabel(); self._tr("s3_lbl_flex_receptor", lbl_flex_receptor.setText)
+        lbl_flex_receptor = QLabel(); self._tr("s2_lbl_flex_receptor", lbl_flex_receptor.setText)
         target_form.addRow(lbl_flex_receptor, wrap_flex)
-        lbl_existing_grid = QLabel(); self._tr("s3_lbl_existing_grid", lbl_existing_grid.setText)
+        lbl_existing_grid = QLabel(); self._tr("s2_lbl_existing_grid", lbl_existing_grid.setText)
         target_form.addRow(lbl_existing_grid, wrap_grid)
 
         btn_detect_pocket = QPushButton()
-        self._tr("s3_btn_detect_pocket", btn_detect_pocket.setText)
-        self._tr("s3_tooltip_detect_pocket", btn_detect_pocket.setToolTip)
+        self._tr("s2_btn_detect_pocket", btn_detect_pocket.setText)
+        self._tr("s2_tooltip_detect_pocket", btn_detect_pocket.setToolTip)
         btn_detect_pocket.setFixedWidth(target_button_width)
         btn_detect_pocket.clicked.connect(self.detect_pocket_p2rank)
         target_form.addRow("", btn_detect_pocket)
 
         # Redocking helpers: grid from a ligand already complexed in the PDB, and export of that
-        # ligand into LIGANDS/REDOCK (reference pose kept aside for the STEP 5 RMSD).
+        # ligand into the REDOCK group of the project's ligands (reference pose kept aside for the STEP 4 RMSD).
         self.cb_cocrystal_ligand = QComboBox()
         self.cb_cocrystal_ligand.setFixedWidth(target_field_width)
         self._cocrystal_ligands: list = []
         btn_find_ligands = QPushButton()
-        self._tr("s3_btn_find_ligands", btn_find_ligands.setText)
-        self._tr("s3_tooltip_find_ligands", btn_find_ligands.setToolTip)
+        self._tr("s2_btn_find_ligands", btn_find_ligands.setText)
+        self._tr("s2_tooltip_find_ligands", btn_find_ligands.setToolTip)
         btn_find_ligands.setFixedWidth(target_button_width)
         btn_find_ligands.clicked.connect(self.find_cocrystal_ligands)
         row_cocrystal = QHBoxLayout()
@@ -2783,17 +3337,17 @@ class MainWindow(QMainWindow):
         row_cocrystal.addWidget(btn_find_ligands)
         row_cocrystal.addStretch(1)
         wrap_cocrystal = QWidget(); wrap_cocrystal.setLayout(row_cocrystal)
-        lbl_cocrystal = QLabel(); self._tr("s3_lbl_cocrystal", lbl_cocrystal.setText)
+        lbl_cocrystal = QLabel(); self._tr("s2_lbl_cocrystal", lbl_cocrystal.setText)
         target_form.addRow(lbl_cocrystal, wrap_cocrystal)
 
         btn_grid_from_ligand = QPushButton()
-        self._tr("s3_btn_grid_from_ligand", btn_grid_from_ligand.setText)
-        self._tr("s3_tooltip_grid_from_ligand", btn_grid_from_ligand.setToolTip)
+        self._tr("s2_btn_grid_from_ligand", btn_grid_from_ligand.setText)
+        self._tr("s2_tooltip_grid_from_ligand", btn_grid_from_ligand.setToolTip)
         btn_grid_from_ligand.setFixedWidth(target_button_width)
         btn_grid_from_ligand.clicked.connect(self.grid_from_cocrystal_ligand)
         btn_export_redock = QPushButton()
-        self._tr("s3_btn_export_redock", btn_export_redock.setText)
-        self._tr("s3_tooltip_export_redock", btn_export_redock.setToolTip)
+        self._tr("s2_btn_export_redock", btn_export_redock.setText)
+        self._tr("s2_tooltip_export_redock", btn_export_redock.setToolTip)
         btn_export_redock.setFixedWidth(target_button_width)
         btn_export_redock.clicked.connect(self.export_cocrystal_ligand_for_redocking)
         row_redock_btns = QHBoxLayout()
@@ -2806,32 +3360,32 @@ class MainWindow(QMainWindow):
         target_form.addRow("", wrap_redock_btns)
 
         target_form.addRow(grid_params_widget)
-        lbl_grid_spacing = QLabel(); self._tr("s3_lbl_grid_spacing", lbl_grid_spacing.setText)
+        lbl_grid_spacing = QLabel(); self._tr("s2_lbl_grid_spacing", lbl_grid_spacing.setText)
         target_form.addRow(lbl_grid_spacing, self.sp_spacing)
 
         btn_prepare = QPushButton()
-        self._tr("s3_btn_prepare_target", btn_prepare.setText)
+        self._tr("s2_btn_prepare_target", btn_prepare.setText)
         btn_prepare.setFixedWidth(180)
         btn_prepare.clicked.connect(self.prepare_target)
         target_form.addRow("", btn_prepare)
         add_centered_group(target_box)
 
         manage_box = QGroupBox()
-        self._tr("s3_grp_prepared_targets", manage_box.setTitle)
+        self._tr("s2_grp_prepared_targets", manage_box.setTitle)
         manage_layout = QVBoxLayout(manage_box)
         manage_row = QHBoxLayout()
         self.cb_prepared_targets = QComboBox()
         self.cb_prepared_targets.setMaximumWidth(200)
         btn_refresh_targets = QPushButton()
-        self._tr("s3_btn_refresh_targets", btn_refresh_targets.setText)
+        self._tr("s2_btn_refresh_targets", btn_refresh_targets.setText)
         btn_refresh_targets.setFixedWidth(170)
         btn_refresh_targets.clicked.connect(self._populate_prepared_targets)
         btn_open_target = QPushButton()
-        self._tr("s3_btn_open_target", btn_open_target.setText)
+        self._tr("s2_btn_open_target", btn_open_target.setText)
         btn_open_target.setFixedWidth(170)
         btn_open_target.clicked.connect(self._open_selected_target_folder)
         btn_remove_target = QPushButton()
-        self._tr("s3_btn_remove_target", btn_remove_target.setText)
+        self._tr("s2_btn_remove_target", btn_remove_target.setText)
         btn_remove_target.setFixedWidth(170)
         btn_remove_target.clicked.connect(self._remove_selected_target)
         manage_row.addWidget(self.cb_prepared_targets)
@@ -2848,7 +3402,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(2, 4))
         step3_tab_index = self.tabs.addTab(tab, "")
-        self._tr("tab_step3", lambda txt, i=step3_tab_index: self.tabs.setTabText(i, txt))
+        self._tr("tab_step2", lambda txt, i=step3_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_targets_summary()
         self._populate_prepared_targets()
         self._toggle_target_mode()
@@ -2856,7 +3410,7 @@ class MainWindow(QMainWindow):
     def _build_docking_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("title_step4"))
+        layout.addWidget(self._title("title_step3"))
 
         docking_group_width = 1000
 
@@ -2869,14 +3423,46 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
+        # Docking parameters (left of the monitor): everything DockingWorker needs besides the
+        # CONFIG performance options; nothing in STEP 1 or STEP 2 depends on them.
+        settings_box = QGroupBox()
+        self._tr("s3_grp_params", settings_box.setTitle)
+        settings_form = QFormLayout(settings_box)
+        settings_form.setHorizontalSpacing(18)
+        settings_form.setVerticalSpacing(8)
+        settings_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.cb_scoring = QComboBox()
+        self.cb_scoring.addItems(["vina", "ad4", "vinardo"])
+        self.cb_split = QComboBox()
+        self.cb_split.addItems(["no", "yes"])
+        self.sp_exhaustiveness = QSpinBox(); self.sp_exhaustiveness.setRange(1, 32768)
+        self.sp_poses = QSpinBox(); self.sp_poses.setRange(1, 100)
+        self.sp_min_rmsd = QDoubleSpinBox(); self.sp_min_rmsd.setRange(0.0, 100.0); self.sp_min_rmsd.setDecimals(3)
+        self.sp_energy = QDoubleSpinBox(); self.sp_energy.setRange(0.0, 100.0); self.sp_energy.setDecimals(3)
+        self.cb_docking_type = QComboBox(); self.cb_docking_type.addItems(["Rigid", "Flexible"])
+        self.cb_docking_mode = QComboBox(); self.cb_docking_mode.addItems(["normal", "score_only", "local_only"])
+        for key, widget in (
+            ("s3_lbl_scoring_function", self.cb_scoring),
+            ("s3_lbl_docking_type", self.cb_docking_type),
+            ("s3_lbl_vina_mode", self.cb_docking_mode),
+            ("s3_lbl_exhaustiveness", self.sp_exhaustiveness),
+            ("s3_lbl_poses", self.sp_poses),
+            ("s3_lbl_energy_range", self.sp_energy),
+            ("s3_lbl_min_rmsd", self.sp_min_rmsd),
+            ("s3_lbl_split_results", self.cb_split),
+        ):
+            label = QLabel(); self._tr(key, label.setText)
+            settings_form.addRow(label, widget)
+        self._toggle_docking_mode_options()
+
         monitor_group = QGroupBox()
-        self._tr("s4_grp_monitor", monitor_group.setTitle)
+        self._tr("s3_grp_monitor", monitor_group.setTitle)
         monitor_group.setMinimumWidth(480)
         monitor_group.setMaximumWidth(480)
         monitor_layout = QVBoxLayout(monitor_group)
 
         interval_row = QHBoxLayout()
-        lbl_update_interval = QLabel(); self._tr("s4_lbl_update_interval", lbl_update_interval.setText)
+        lbl_update_interval = QLabel(); self._tr("s3_lbl_update_interval", lbl_update_interval.setText)
         interval_row.addWidget(lbl_update_interval)
         self.cb_monitor_interval = QComboBox()
         for seconds in (1, 2, 5, 10, 15, 30, 60):
@@ -2894,22 +3480,22 @@ class MainWindow(QMainWindow):
         self.lbl_monitor_eta = QLabel("-")
         self.lbl_monitor_running_time = QLabel("-")
         self.lbl_monitor_completion = QLabel("-")
-        lbl_docked = QLabel(); self._tr("s4_lbl_docked", lbl_docked.setText)
+        lbl_docked = QLabel(); self._tr("s3_lbl_docked", lbl_docked.setText)
         monitor_form.addRow(lbl_docked, self.lbl_monitor_docked)
-        lbl_total = QLabel(); self._tr("s4_lbl_total", lbl_total.setText)
+        lbl_total = QLabel(); self._tr("s3_lbl_total", lbl_total.setText)
         monitor_form.addRow(lbl_total, self.lbl_monitor_total)
-        lbl_percent = QLabel(); self._tr("s4_lbl_percent", lbl_percent.setText)
+        lbl_percent = QLabel(); self._tr("s3_lbl_percent", lbl_percent.setText)
         monitor_form.addRow(lbl_percent, self.lbl_monitor_percent)
-        lbl_eta = QLabel(); self._tr("s4_lbl_eta", lbl_eta.setText)
+        lbl_eta = QLabel(); self._tr("s3_lbl_eta", lbl_eta.setText)
         monitor_form.addRow(lbl_eta, self.lbl_monitor_eta)
-        lbl_running_time = QLabel(); self._tr("s4_lbl_running_time", lbl_running_time.setText)
+        lbl_running_time = QLabel(); self._tr("s3_lbl_running_time", lbl_running_time.setText)
         monitor_form.addRow(lbl_running_time, self.lbl_monitor_running_time)
-        lbl_completion = QLabel(); self._tr("s4_lbl_completion", lbl_completion.setText)
+        lbl_completion = QLabel(); self._tr("s3_lbl_completion", lbl_completion.setText)
         monitor_form.addRow(lbl_completion, self.lbl_monitor_completion)
         monitor_layout.addLayout(monitor_form)
 
         btn_run = QPushButton()
-        self._tr("s4_btn_run_docking", btn_run.setText)
+        self._tr("s3_btn_run_docking", btn_run.setText)
         btn_run.setFixedWidth(180)
         btn_run.clicked.connect(self.run_docking)
         monitor_layout.addWidget(btn_run, alignment=Qt.AlignCenter)
@@ -2917,7 +3503,14 @@ class MainWindow(QMainWindow):
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._refresh_docking_monitor)
 
-        add_centered_group(monitor_group)
+        params_row = QHBoxLayout()
+        params_row.setContentsMargins(0, 0, 0, 0)
+        params_row.setSpacing(14)
+        params_row.addWidget(settings_box, 1, Qt.AlignTop)
+        params_row.addWidget(monitor_group, 0, Qt.AlignTop)
+        params_wrap = QWidget()
+        params_wrap.setLayout(params_row)
+        add_centered_group(params_wrap)
 
         self.pb_docking = QProgressBar()
         self.pb_docking.setValue(0)
@@ -2929,13 +3522,13 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(3, 5))
         step4_tab_index = self.tabs.addTab(tab, "")
-        self._tr("tab_step4", lambda txt, i=step4_tab_index: self.tabs.setTabText(i, txt))
-        self._refresh_result_folders()
+        self._tr("tab_step3", lambda txt, i=step4_tab_index: self.tabs.setTabText(i, txt))
+        self._refresh_result_selectors()
 
     def _build_results_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(self._title("title_step5"))
+        layout.addWidget(self._title("title_step4"))
 
         results_group_width = 1000
 
@@ -2949,54 +3542,52 @@ class MainWindow(QMainWindow):
             layout.addLayout(row_wrap)
 
         filters_box = QGroupBox()
-        self._tr("s5_grp_filters", filters_box.setTitle)
+        self._tr("s4_grp_filters", filters_box.setTitle)
         filters_form = QFormLayout(filters_box)
         self.sp_result_top_n = QSpinBox(); self.sp_result_top_n.setRange(1, 100000)
         self.sp_result_rmsd = QDoubleSpinBox(); self.sp_result_rmsd.setRange(0.0, 1000.0); self.sp_result_rmsd.setDecimals(4)
-        lbl_top_ligands = QLabel(); self._tr("s5_lbl_top_ligands", lbl_top_ligands.setText)
+        lbl_top_ligands = QLabel(); self._tr("s4_lbl_top_ligands", lbl_top_ligands.setText)
         filters_form.addRow(lbl_top_ligands, self.sp_result_top_n)
-        lbl_rmsd_threshold = QLabel(); self._tr("s5_lbl_rmsd_threshold", lbl_rmsd_threshold.setText)
+        lbl_rmsd_threshold = QLabel(); self._tr("s4_lbl_rmsd_threshold", lbl_rmsd_threshold.setText)
         filters_form.addRow(lbl_rmsd_threshold, self.sp_result_rmsd)
         add_centered_group(filters_box)
 
         controls_box = QGroupBox()
-        self._tr("s5_grp_controls", controls_box.setTitle)
+        self._tr("s4_grp_controls", controls_box.setTitle)
         controls_layout = QVBoxLayout(controls_box)
         selectors_row = QHBoxLayout()
-        self.cb_results_folder = QComboBox()
-        self.cb_results_folder.setMaximumWidth(320)
+        self.lbl_results_project = QLabel()
+        self.lbl_results_project.setStyleSheet("font-weight:bold;color:#29B6D8;")
         self.cb_results_target = QComboBox()
         self.cb_results_target.setMaximumWidth(260)
         self.cb_results_databank = QComboBox()
         self.cb_results_databank.setMaximumWidth(260)
-        self.cb_results_folder.currentTextChanged.connect(self._refresh_result_targets)
-        self.cb_results_folder.currentTextChanged.connect(self._refresh_result_databanks)
         btn_refresh = QPushButton()
-        self._tr("s5_btn_refresh", btn_refresh.setText)
+        self._tr("s4_btn_refresh", btn_refresh.setText)
         btn_refresh.setFixedWidth(255)
-        btn_refresh.clicked.connect(self._refresh_result_folders)
+        btn_refresh.clicked.connect(self._refresh_result_selectors)
         btn_open = QPushButton()
-        self._tr("s5_btn_open_result_folder", btn_open.setText)
+        self._tr("s4_btn_open_result_folder", btn_open.setText)
         btn_open.setFixedWidth(255)
         btn_open.clicked.connect(self._open_current_result_folder)
         btn_load = QPushButton()
-        self._tr("s5_btn_load_raw_csv", btn_load.setText)
+        self._tr("s4_btn_load_raw_csv", btn_load.setText)
         btn_load.setFixedWidth(255)
         btn_load.clicked.connect(self.preview_selected_result)
         btn_filtered = QPushButton()
-        self._tr("s5_btn_load_filtered", btn_filtered.setText)
+        self._tr("s4_btn_load_filtered", btn_filtered.setText)
         btn_filtered.setFixedWidth(255)
         btn_filtered.clicked.connect(self.preview_filtered_result)
         btn_export = QPushButton()
-        self._tr("s5_btn_export_csv", btn_export.setText)
+        self._tr("s4_btn_export_csv", btn_export.setText)
         btn_export.setFixedWidth(255)
         btn_export.clicked.connect(self.export_filtered_result)
         btn_plot = QPushButton()
-        self._tr("s5_btn_plot_filtered", btn_plot.setText)
+        self._tr("s4_btn_plot_filtered", btn_plot.setText)
         btn_plot.setFixedWidth(255)
         btn_plot.clicked.connect(self.plot_filtered_result)
         selectors_row.addStretch(1)
-        selectors_row.addWidget(self.cb_results_folder)
+        selectors_row.addWidget(self.lbl_results_project)
         selectors_row.addWidget(self.cb_results_target)
         selectors_row.addWidget(self.cb_results_databank)
         selectors_row.addStretch(1)
@@ -3007,8 +3598,8 @@ class MainWindow(QMainWindow):
         buttons_grid.setVerticalSpacing(10)
         buttons_grid.setAlignment(Qt.AlignCenter)
         btn_redock = QPushButton()
-        self._tr("s5_btn_redock_rmsd", btn_redock.setText)
-        self._tr("s5_tooltip_redock_rmsd", btn_redock.setToolTip)
+        self._tr("s4_btn_redock_rmsd", btn_redock.setText)
+        self._tr("s4_tooltip_redock_rmsd", btn_redock.setToolTip)
         btn_redock.setFixedWidth(255)
         btn_redock.clicked.connect(self.compute_redocking_rmsd)
         result_buttons = [
@@ -3030,7 +3621,7 @@ class MainWindow(QMainWindow):
         add_centered_group(self.tbl_results)
 
         btn_report = QPushButton()
-        self._tr("s5_btn_generate_report", btn_report.setText)
+        self._tr("s4_btn_generate_report", btn_report.setText)
         btn_report.setFixedWidth(255)
         btn_report.clicked.connect(self.generate_final_report)
         layout.addWidget(btn_report, alignment=Qt.AlignCenter)
@@ -3038,8 +3629,8 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(4, None))
         step5_tab_index = self.tabs.addTab(tab, "")
-        self._tr("tab_step5", lambda txt, i=step5_tab_index: self.tabs.setTabText(i, txt))
-        self._refresh_result_folders()
+        self._tr("tab_step4", lambda txt, i=step5_tab_index: self.tabs.setTabText(i, txt))
+        self._refresh_result_selectors()
 
     def _path_row(self, editor: QLineEdit, callback) -> QWidget:
         widget = QWidget()
@@ -3056,30 +3647,23 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select directory", current)
         return path or None
 
-    def _browse_ligands_dir(self) -> None:
-        selected = self._browse_directory(self.ligands_dir)
-        if selected:
-            self.ligands_dir = selected
-            self.ed_ligands_dir.setText(selected)
-            self._save_settings()
-            self._refresh_ligand_summary()
-
-    def _browse_targets_dir(self) -> None:
-        selected = self._browse_directory(self.targets_dir)
-        if selected:
-            self.targets_dir = selected
-            self.ed_targets_dir.setText(selected)
-            self._save_settings()
-            self._refresh_targets_summary()
-
-    def _browse_jobs_dir(self) -> None:
-        selected = self._browse_directory(self.jobs_dir)
-        if selected:
-            self.jobs_dir = selected
-            self.ed_jobs_dir.setText(selected)
-            os.makedirs(self.jobs_dir, exist_ok=True)
-            self._save_settings()
-            self._refresh_result_folders()
+    def _browse_ligand_sources(self) -> None:
+        """STEP 1 > Ligands > Browse: opens the BASE folder so the user can pick one or more multi-ligand
+        files and/or one or more folders of individual ligands, which are then copied into the project."""
+        if not self._require_project():
+            return
+        start = self.base_dir if os.path.isdir(self.base_dir) else self.app_dir
+        dialog = LigandSourcesDialog(self, self._t("s1_dlg_pick_ligands"), start)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        picked = [path for path in dialog.selectedFiles() if os.path.exists(path)]
+        if not picked:
+            return
+        known = list(self.ligand_settings.ligand_sources)
+        self.ligand_settings.ligand_sources = known + [path for path in picked if path not in known]
+        self.ed_ligands.setText("; ".join(self.ligand_settings.ligand_sources))
+        self.ed_ligands.setToolTip("\n".join(self.ligand_settings.ligand_sources))
+        self._run_ligand_tool("import_ligands", sources=picked)
 
     @staticmethod
     def _opencl_device_score(device: dict[str, Any]) -> tuple[int, int, int, int]:
@@ -3158,20 +3742,57 @@ class MainWindow(QMainWindow):
         self.cb_opencl_device.setCurrentIndex(index if index >= 0 else 0)
         self.cb_opencl_device.blockSignals(False)
 
-    def _refresh_ligand_summary(self) -> None:
-        group_count = 0
-        ligand_count = 0
-        if os.path.isdir(self.ligands_dir):
-            for group in Path(self.ligands_dir).glob("*/"):
-                if not group.is_dir():
-                    continue
-                group_count += 1
-                ligand_count += len(list(group.glob("*.pdbqt")))
-        conversion_summary = self.conversion_results_dir or "No job selected yet - click 'Save settings' in Step 1."
-        self.lbl_lig_summary.setText(
-            f"Ligand groups: {group_count} | PDBQT ligands: {ligand_count} | Directory: {self.ligands_dir}\n"
-            f"Conversion results: {conversion_summary}"
-        )
+    # (i18n key of the stage, counter) - the Monitor table of STEP 1, in this order.
+    _LIGAND_MONITOR_ROWS = (
+        ("s1_mon_groups", "groups"),
+        ("s1_mon_multimodels", "multimodels"),
+        ("s1_mon_splitted", "splitted"),
+        ("s1_mon_empty", "empty"),
+        ("s1_mon_converted", "converted"),
+        ("s1_mon_rejected", "rejected"),
+        ("s1_mon_recovered", "recovered"),
+    )
+
+    @staticmethod
+    def _walk_file_names(folder: str):
+        """Names of every file under `folder`, whatever the depth (nothing if it does not exist)."""
+        for _dirpath, _dirnames, filenames in os.walk(folder):
+            yield from filenames
+
+    def _ligand_monitor_counts(self) -> dict[str, int]:
+        """Ligands at each stage of the open project, totalled over ALL group folders of CONVERSION/LIGANDS
+        (every folder is a databank, or a piece of one that exceeded "Max ligands/folder"):
+
+        groups       folders in LIGANDS (RECOVERED is not a group)
+        multimodels  multi-ligand files loose in LIGANDS, waiting for "Split multimodel files"
+        splitted     single-ligand files in the groups, not converted yet
+        empty        files moved to EMPTY_LIGANDS (smaller than "Minimum file size")
+        converted    .pdbqt files in the groups
+        rejected     files in CONVERSION_FAILURES
+        recovered    files in LIGANDS/RECOVERED"""
+        counts = dict.fromkeys((counter for _key, counter in self._LIGAND_MONITOR_ROWS), 0)
+        ligands_dir = self.ligands_dir
+        if os.path.isdir(ligands_dir):
+            with os.scandir(ligands_dir) as entries:
+                for entry in entries:
+                    if entry.is_file():
+                        counts["multimodels"] += 1
+                    elif entry.name == "RECOVERED":
+                        counts["recovered"] += sum(1 for _ in self._walk_file_names(entry.path))
+                    elif entry.is_dir():
+                        counts["groups"] += 1
+                        for name in self._walk_file_names(entry.path):
+                            counts["converted" if name.lower().endswith(".pdbqt") else "splitted"] += 1
+        counts["empty"] = sum(1 for _ in self._walk_file_names(os.path.join(self.conversion_dir, "EMPTY_LIGANDS")))
+        counts["rejected"] = sum(1 for _ in self._walk_file_names(os.path.join(self.conversion_dir, "CONVERSION_FAILURES")))
+        return counts
+
+    def _refresh_ligand_monitor(self) -> None:
+        if not hasattr(self, "tbl_lig_monitor"):
+            return
+        counts = self._ligand_monitor_counts() if self.project.is_open else {}
+        for row_idx, (_label_key, counter) in enumerate(self._LIGAND_MONITOR_ROWS):
+            self.tbl_lig_monitor.item(row_idx, 1).setText(f"{counts[counter]:,}" if counter in counts else "-")
 
     def _collect_ligand_settings_from_widgets(self) -> None:
         if hasattr(self, "sp_lig_file_size"):
@@ -3210,6 +3831,11 @@ class MainWindow(QMainWindow):
             self.ligand_settings.tpsa_max = self.sp_lig_tpsa.value()
 
     def _apply_ligand_settings_to_widgets(self) -> None:
+        if hasattr(self, "ed_ligands"):
+            self.ed_ligands.setText("; ".join(self.ligand_settings.ligand_sources))
+            self.ed_ligands.setToolTip(
+                "\n".join(self.ligand_settings.ligand_sources) or self._t("s1_tip_ligands")
+            )
         if hasattr(self, "sp_lig_file_size"):
             self.sp_lig_file_size.setValue(self.ligand_settings.min_file_size)
         if hasattr(self, "sp_lig_ph"):
@@ -3258,31 +3884,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, "sp_result_rmsd"):
             self.sp_result_rmsd.setValue(self.result_view_settings.rmsd_limit)
 
-    def _run_ligand_tool(self, operation: str) -> None:
-        self._save_settings()
-        if not self.current_job_name:
-            QMessageBox.warning(self, APP_NAME, "Click 'Save settings' in Step 1 first to create or select a job.")
+    def _run_ligand_tool(self, operation: str, sources: Optional[list[str]] = None) -> None:
+        if not self._require_project():
             return
+        self._save_settings()
         self.pb_ligand.setValue(0)
         self.txt_ligand_log.clear()
         self._ligand_tool_operation = operation
-        self._ligand_tool_conversion_dir = self.conversion_results_dir
+        self._ligand_tool_conversion_dir = self.conversion_dir
         self.ligand_worker = LigandToolsWorker(
             app_dir=self.app_dir,
             ligands_dir=self.ligands_dir,
-            conversion_dir=self.conversion_results_dir,
+            conversion_dir=self.conversion_dir,
             settings=self.ligand_settings,
             operation=operation,
+            sources=sources,
         )
         self.ligand_worker.progress_value.connect(self.pb_ligand.setValue)
         self.ligand_worker.progress_text.connect(self.txt_ligand_log.appendPlainText)
         self.ligand_worker.finished_ok.connect(self._on_ligand_tool_finished)
         self.ligand_worker.failed.connect(self._on_ligand_tool_failed)
         self.ligand_worker.start()
+        self.ligand_monitor_timer.start()
 
     def _log_ligand_action(self, conversion_dir: str, operation: str) -> None:
-        """Append a record of a successfully completed Step 2 action, so the Final Report
-        (Step 5) can later tell which conversion actions actually ran for this job."""
+        """Append a record of a successfully completed Step 1 action, so the Final Report
+        (Step 4) can later tell which conversion actions actually ran for this project."""
         try:
             os.makedirs(conversion_dir, exist_ok=True)
             with open(os.path.join(conversion_dir, "actions.log"), "a", encoding="utf-8") as handle:
@@ -3293,16 +3920,25 @@ class MainWindow(QMainWindow):
     def _on_ligand_tool_finished(self, message: str) -> None:
         self.pb_ligand.setValue(100)
         self.txt_ligand_log.appendPlainText(message)
-        if hasattr(self, "_ligand_tool_operation") and hasattr(self, "_ligand_tool_conversion_dir"):
+        # importing is not one of the conversion actions the Final Report lists
+        if getattr(self, "_ligand_tool_operation", "import_ligands") != "import_ligands" and hasattr(self, "_ligand_tool_conversion_dir"):
             self._log_ligand_action(self._ligand_tool_conversion_dir, self._ligand_tool_operation)
-        self._refresh_ligand_summary()
+        self.ligand_monitor_timer.stop()
+        self._refresh_ligand_monitor()
         QMessageBox.information(self, APP_NAME, message)
 
     def _on_ligand_tool_failed(self, message: str) -> None:
+        self.ligand_monitor_timer.stop()
+        self._refresh_ligand_monitor()
         self.txt_ligand_log.appendPlainText(message)
         QMessageBox.critical(self, APP_NAME, message)
 
     def _refresh_targets_summary(self) -> None:
+        if not hasattr(self, "txt_targets"):
+            return
+        if not self.project.is_open:
+            self.txt_targets.setPlainText(self._t("msg_no_project"))
+            return
         lines = []
         for target in sorted(p for p in Path(self.targets_dir).glob("*/") if p.is_dir()):
             markers = []
@@ -3319,7 +3955,7 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select target file",
-            self.targets_dir,
+            self.base_dir,
             "Structure files (*.pdb *.pdbqt *.mol2 *.ent *.txt);;All files (*)",
         )
         if file_path:
@@ -3329,7 +3965,7 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             title,
-            self.targets_dir,
+            self.base_dir,
             "PDBQT files (*.pdbqt);;All files (*)",
         )
         if file_path:
@@ -3339,7 +3975,7 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             title,
-            self.targets_dir,
+            self.base_dir,
             "Grid files (*.txt);;All files (*)",
         )
         if file_path:
@@ -3358,7 +3994,7 @@ class MainWindow(QMainWindow):
         current = self.cb_prepared_targets.currentText().strip()
         self.cb_prepared_targets.blockSignals(True)
         self.cb_prepared_targets.clear()
-        targets = [path.name for path in sorted(Path(self.targets_dir).glob("*/")) if path.is_dir()]
+        targets = [path.name for path in sorted(Path(self.targets_dir).glob("*/")) if path.is_dir()] if self.project.is_open else []
         self.cb_prepared_targets.addItems(targets)
         if current and current in targets:
             self.cb_prepared_targets.setCurrentText(current)
@@ -3370,6 +4006,8 @@ class MainWindow(QMainWindow):
             self._open_path(os.path.join(self.targets_dir, target_name))
 
     def _remove_selected_target(self) -> None:
+        if not self._require_project():
+            return
         target_name = self.cb_prepared_targets.currentText().strip() if hasattr(self, "cb_prepared_targets") else ""
         if not target_name:
             QMessageBox.warning(self, APP_NAME, "Select a target to remove.")
@@ -3390,9 +4028,12 @@ class MainWindow(QMainWindow):
         shutil.rmtree(target_dir, ignore_errors=True)
         self._refresh_targets_summary()
         self._populate_prepared_targets()
-        self._refresh_result_folders()
+        self._refresh_result_selectors()
 
     def prepare_target(self) -> None:
+        if not self._require_project():
+            return
+        self._collect_settings_from_widgets()
         flexible_mode = self.cb_target_mode.currentIndex() == 1 if hasattr(self, "cb_target_mode") else False
         target_name_input = self.ed_target_name.text().strip() if hasattr(self, "ed_target_name") else ""
 
@@ -3462,7 +4103,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_targets_summary()
         self._populate_prepared_targets()
-        self._refresh_result_folders()
+        self._refresh_result_selectors()
 
     def detect_pocket_p2rank(self) -> None:
         """Run a P2Rank heuristic pocket search on the currently selected target structure
@@ -3558,7 +4199,10 @@ class MainWindow(QMainWindow):
         )
 
     def export_cocrystal_ligand_for_redocking(self) -> None:
-        """Send the selected co-crystal ligand to LIGANDS/REDOCK (prepared by STEP 2) and keep its crystal pose as reference."""
+        """Send the selected co-crystal ligand to the REDOCK group of the project's ligands (prepared by STEP 1)
+        and keep its crystal pose as reference."""
+        if not self._require_project():
+            return
         ligand = self._selected_cocrystal_ligand()
         if ligand is None:
             return
@@ -3568,17 +4212,36 @@ class MainWindow(QMainWindow):
         target_name_input = self.ed_target_name.text().strip()
         target_base = self._safe_target_name(target_name_input or Path(path).stem)
         ligand_name = self._safe_target_name(f"{target_base}_{ligand.resname}_{ligand.chain}{ligand.resnum}")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            info = module_cocrystal.export_ligand_for_redocking(
-                ligand, ligand_name, target_base, self.ligands_dir, self.app_dir
-            )
-        except Exception as exc:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, APP_NAME, f"Could not export {ligand.label} for redocking:\n{exc}")
-            return
-        QApplication.restoreOverrideCursor()
-        self._refresh_ligand_summary()
+        template_smiles = None
+        while True:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                info = module_cocrystal.export_ligand_for_redocking(
+                    ligand, ligand_name, target_base, self.ligands_dir, self.project.reference_dir, template_smiles
+                )
+                QApplication.restoreOverrideCursor()
+                break
+            except module_cocrystal.BondOrderError as exc:
+                QApplication.restoreOverrideCursor()
+                # No RCSB template and no valid perception: let the user give the structure.
+                template_smiles, accepted = QInputDialog.getText(
+                    self,
+                    APP_NAME,
+                    f"{exc}\n\nType the SMILES of {ligand.resname} (for example from the RCSB page of the PDB entry) "
+                    "to use it as the bond-order template:",
+                )
+                template_smiles = (template_smiles or "").strip()
+                if not accepted or not template_smiles:
+                    return
+            except Exception as exc:
+                QApplication.restoreOverrideCursor()
+                if template_smiles:
+                    QMessageBox.warning(self, APP_NAME, f"Could not use that SMILES for {ligand.label}:\n{exc}")
+                    template_smiles = None
+                    continue
+                QMessageBox.critical(self, APP_NAME, f"Could not export {ligand.label} for redocking:\n{exc}")
+                return
+        self._refresh_ligand_monitor()
         QMessageBox.information(
             self,
             APP_NAME,
@@ -3586,8 +4249,8 @@ class MainWindow(QMainWindow):
             f"Ligand file: {info['sdf_path']}\n"
             f"Crystal pose (reference): {info['reference_path']}\n"
             f"Bond orders from: {info['method']}\nSMILES: {info['smiles']}\n\n"
-            f"Next: prepare the target named '{target_base}' (Prepare target), convert the REDOCK group in STEP 2, "
-            "run the docking and use 'Redocking RMSD' in STEP 5. Note the REDOCK group is docked against every target in TARGETS.",
+            f"Next: prepare the target named '{target_base}' (Prepare target), convert the REDOCK group in STEP 1, "
+            "run the docking and use 'Redocking RMSD' in STEP 4. Note the REDOCK group is docked against every target of the project.",
         )
 
     def _copy_if_different(self, src: str, dst: str) -> None:
@@ -3611,11 +4274,6 @@ class MainWindow(QMainWindow):
                 f"center\t{self.sp_center_x.value()}\t{self.sp_center_y.value()}\t{self.sp_center_z.value()}\n"
             )
 
-    def _toggle_restart_combo(self) -> None:
-        is_restart = self.cb_run_type.currentText() == "RESTART"
-        self.cb_existing_result.setEnabled(is_restart)
-        self._refresh_result_folders()
-
     def _toggle_docking_mode_options(self) -> None:
         if not hasattr(self, "cb_processing_type") or not hasattr(self, "cb_docking_mode"):
             return
@@ -3628,17 +4286,11 @@ class MainWindow(QMainWindow):
         self.cb_docking_mode.setCurrentText(current_mode if current_mode in allowed_modes else "normal")
         self.cb_docking_mode.blockSignals(False)
 
-    # Fields in "Ligand preparation settings" that only the OpenBabel engine's conversion/
-    # validation code paths actually read (see _lig_convert_single_openbabel and
-    # _invalid_pdbqt_reason_heuristic) - grayed out whenever RDKit is selected instead.
-    _LIG_OPENBABEL_ONLY_FIELDS = ("s2_lbl_min_algorithm", "s2_lbl_rejected")
-
     def _sync_lig_conversion_settings_state(self) -> None:
-        """Keeps "Ligand preparation settings" honest about which of its fields the selected
-        Conversion engine actually uses: repopulates Minimization force field (GAFF/Ghemical are
-        OpenBabel-only, so RDKit used to silently fall back to MMFF94 if one was picked instead of
-        just not offering them), and grays out (disabled, matching QSS's :disabled state) every
-        field the active engine's conversion code never reads."""
+        """Keeps the Minimization force field list honest about the selected Conversion engine:
+        GAFF/Ghemical are OpenBabel-only, so RDKit does not offer them (it used to silently fall
+        back to MMFF94 if one was picked). The other fields stay enabled with either engine,
+        because a failed conversion is retried with the other one."""
         if not hasattr(self, "cb_lig_conversion_engine") or not hasattr(self, "cb_lig_min_forcefield"):
             return
         current_forcefield = self.cb_lig_min_forcefield.currentText().strip() or "MMFF94"
@@ -3652,75 +4304,40 @@ class MainWindow(QMainWindow):
         self.cb_lig_min_forcefield.setCurrentText(current_forcefield if current_forcefield in allowed_forcefields else "MMFF94")
         self.cb_lig_min_forcefield.blockSignals(False)
 
-        field_pairs = getattr(self, "_lig_field_pairs", {})
-        openbabel_enabled = engine != "RDKit"
-        for key in self._LIG_OPENBABEL_ONLY_FIELDS:
-            pair = field_pairs.get(key)
-            if pair is None:
-                continue
-            label_widget, field_widget = pair
-            label_widget.setEnabled(openbabel_enabled)
-            field_widget.setEnabled(openbabel_enabled)
-
     def _sync_fix_macrocycles_button(self) -> None:
-        """"Fix macrocycles for GPU" only matters when Step 1's Processing type is GPU (macrocycle
+        """"Fix macrocycles for GPU" only matters when the Processing type (CONFIG) is GPU (macrocycle
         handling is a GPU-only Vina-GPU limitation) - grayed out/disabled otherwise."""
         if not hasattr(self, "btn_lig_fix_macrocycles") or not hasattr(self, "cb_processing_type"):
             return
         self.btn_lig_fix_macrocycles.setEnabled(self.cb_processing_type.currentText().strip() == "GPU")
 
-    def _refresh_result_folders(self) -> None:
-        job_dirs = [path for path in Path(self.jobs_dir).glob("*/") if path.is_dir()]
-        job_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-        folders = [path.name for path in job_dirs]
-        if hasattr(self, "cb_existing_result"):
-            self.cb_existing_result.clear()
-            is_restart = hasattr(self, "cb_run_type") and self.cb_run_type.currentText().strip() == "RESTART"
-            if is_restart:
-                # RESTART is the only mode where picking a different existing job makes sense.
-                self.cb_existing_result.addItems(folders)
-                if self.current_job_name in folders:
-                    self.cb_existing_result.setCurrentText(self.current_job_name)
-            elif self.current_job_name:
-                # NEW: read-only display (the combo is disabled outside RESTART) of whichever
-                # job is currently active - blank until "Save settings" creates one (NEW always
-                # makes a fresh JOBS/<...> folder, it never reuses this name), then shows that
-                # freshly created job's name so it is clear which folder was just made.
-                self.cb_existing_result.addItem(self.current_job_name)
-                self.cb_existing_result.setCurrentText(self.current_job_name)
-            # else: no active job yet, leave the combo empty.
-        if hasattr(self, "cb_results_folder"):
-            self.cb_results_folder.clear()
-            self.cb_results_folder.addItems(folders)
-        if hasattr(self, "cb_results_target") and hasattr(self, "cb_results_folder"):
-            self._refresh_result_targets()
-        if hasattr(self, "cb_results_databank") and hasattr(self, "cb_results_folder"):
-            self._refresh_result_databanks()
+    def _refresh_result_selectors(self) -> None:
+        """Targets / ligand groups offered in STEP 4, read from the open project's DOCKING folder."""
+        self._refresh_result_targets()
+        self._refresh_result_databanks()
+
+    def _docked_target_dirs(self) -> list[Path]:
+        if not self.project.is_open or not os.path.isdir(self.docking_dir):
+            return []
+        return [path for path in sorted(Path(self.docking_dir).glob("*/")) if path.is_dir()]
 
     def _refresh_result_targets(self) -> None:
-        if not hasattr(self, "cb_results_target") or not hasattr(self, "cb_results_folder"):
+        if not hasattr(self, "cb_results_target"):
             return
         self.cb_results_target.clear()
-        result_name = self.cb_results_folder.currentText().strip()
-        if not result_name:
+        if not self.project.is_open:
             return
-        result_dir = Path(self._job_docking_dir(result_name))
-        targets = [path.name for path in sorted(result_dir.glob("*/")) if path.is_dir()]
         self.cb_results_target.addItem("All targets")
-        self.cb_results_target.addItems(targets)
+        self.cb_results_target.addItems([path.name for path in self._docked_target_dirs()])
 
     def _refresh_result_databanks(self) -> None:
-        if not hasattr(self, "cb_results_databank") or not hasattr(self, "cb_results_folder"):
+        if not hasattr(self, "cb_results_databank"):
             return
         self.cb_results_databank.clear()
-        result_name = self.cb_results_folder.currentText().strip()
-        if not result_name:
+        if not self.project.is_open:
             return
-        result_dir = Path(self._job_docking_dir(result_name))
         databanks: set[str] = set()
-        for target_dir in result_dir.glob("*/"):
-            if not target_dir.is_dir():
-                continue
+        for target_dir in self._docked_target_dirs():
             for group_dir in target_dir.glob("*/"):
                 if group_dir.is_dir():
                     databanks.add(group_dir.name)
@@ -3728,9 +4345,8 @@ class MainWindow(QMainWindow):
         self.cb_results_databank.addItems(sorted(databanks))
 
     def _open_current_result_folder(self) -> None:
-        result_name = self.cb_results_folder.currentText().strip()
-        if result_name:
-            self._open_path(self._job_dir(result_name))
+        if self._require_project():
+            self._open_path(self.project.path)
 
     def _open_path(self, path: str) -> None:
         if not path or not os.path.exists(path):
@@ -3746,10 +4362,6 @@ class MainWindow(QMainWindow):
             self.settings.docking_type = self.cb_docking_type.currentText().strip()
         if hasattr(self, "cb_processing_type"):
             self.settings.processing_type = self.cb_processing_type.currentText().strip()
-        if hasattr(self, "cb_run_type"):
-            self.settings.run_type = self.cb_run_type.currentText().strip()
-        if hasattr(self, "cb_existing_result"):
-            self.settings.selected_result = self.cb_existing_result.currentText().strip()
         if hasattr(self, "cb_opencl_platform"):
             platform_id = self.cb_opencl_platform.currentData()
             self.settings.opencl_platform_id = int(platform_id) if platform_id is not None else -1
@@ -3758,7 +4370,6 @@ class MainWindow(QMainWindow):
             self.settings.opencl_device_id = int(device_id) if device_id is not None else -1
         self.settings.split_results = self.cb_split.currentText().strip() == "yes"
         self.settings.cpu_threads = self.sp_cpu_threads.value()
-        self.settings.cpu_parallelism = self.sp_cpu_parallel.value()
         self.settings.exhaustiveness = self.sp_exhaustiveness.value()
         self.settings.gpu_threads = self.sp_gpu_threads.value()
         self.settings.poses = self.sp_poses.value()
@@ -3773,7 +4384,27 @@ class MainWindow(QMainWindow):
         self.settings.grid_z_center = self.sp_center_z.value()
         self.settings.target_ph = self.sp_target_ph.value()
         self._collect_ligand_settings_from_widgets()
+        self._collect_target_settings_from_widgets()
         self._collect_result_settings_from_widgets()
+
+    def _collect_target_settings_from_widgets(self) -> None:
+        if hasattr(self, "cb_target_mode"):
+            self.target_settings.mode_index = self.cb_target_mode.currentIndex()
+            self.target_settings.target_name = self.ed_target_name.text().strip()
+            self.target_settings.target_file = self.ed_target_file.text().strip()
+            self.target_settings.rigid_file = self.ed_target_rigid_file.text().strip()
+            self.target_settings.flex_file = self.ed_target_flex_file.text().strip()
+            self.target_settings.grid_file = self.ed_target_grid_file.text().strip()
+
+    def _apply_target_settings_to_widgets(self) -> None:
+        if hasattr(self, "cb_target_mode"):
+            self.cb_target_mode.setCurrentIndex(max(0, min(self.target_settings.mode_index, self.cb_target_mode.count() - 1)))
+            self.ed_target_name.setText(self.target_settings.target_name)
+            self.ed_target_file.setText(self.target_settings.target_file)
+            self.ed_target_rigid_file.setText(self.target_settings.rigid_file)
+            self.ed_target_flex_file.setText(self.target_settings.flex_file)
+            self.ed_target_grid_file.setText(self.target_settings.grid_file)
+            self._toggle_target_mode()
 
     def _apply_settings_to_widgets(self) -> None:
         if hasattr(self, "cb_scoring"):
@@ -3786,11 +4417,6 @@ class MainWindow(QMainWindow):
             self._sync_fix_macrocycles_button()
         if hasattr(self, "cb_docking_mode"):
             self.cb_docking_mode.setCurrentText(self.settings.docking_mode)
-        if hasattr(self, "cb_run_type"):
-            self.cb_run_type.setCurrentText(self.settings.run_type)
-            self._toggle_restart_combo()
-        if hasattr(self, "cb_existing_result"):
-            self.cb_existing_result.setCurrentText(self.settings.selected_result)
         if hasattr(self, "cb_opencl_platform"):
             self._load_opencl_choices()
             index = self.cb_opencl_platform.findData(self.settings.opencl_platform_id)
@@ -3805,8 +4431,6 @@ class MainWindow(QMainWindow):
             self.cb_split.setCurrentText("yes" if self.settings.split_results else "no")
         if hasattr(self, "sp_cpu_threads"):
             self.sp_cpu_threads.setValue(self.settings.cpu_threads)
-        if hasattr(self, "sp_cpu_parallel"):
-            self.sp_cpu_parallel.setValue(self.settings.cpu_parallelism)
         if hasattr(self, "sp_exhaustiveness"):
             self.sp_exhaustiveness.setValue(self.settings.exhaustiveness)
         if hasattr(self, "sp_gpu_threads"):
@@ -3833,74 +4457,71 @@ class MainWindow(QMainWindow):
             self.sp_center_z.setValue(self.settings.grid_z_center)
         if hasattr(self, "sp_target_ph"):
             self.sp_target_ph.setValue(self.settings.target_ph)
-        if hasattr(self, "ed_ligands_dir"):
-            self.ed_ligands_dir.setText(self.ligands_dir)
-        if hasattr(self, "ed_targets_dir"):
-            self.ed_targets_dir.setText(self.targets_dir)
-        if hasattr(self, "ed_jobs_dir"):
-            self.ed_jobs_dir.setText(self.jobs_dir)
         self._apply_ligand_settings_to_widgets()
+        self._apply_target_settings_to_widgets()
         self._apply_result_settings_to_widgets()
 
-    def _save_settings(self, manage_job: bool = False) -> None:
+    @staticmethod
+    def _write_json(path: str, data: dict[str, Any]) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+
+    @staticmethod
+    def _read_json(path: str) -> dict[str, Any]:
+        if not path or not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_settings(self) -> None:
+        """Write the settings now on screen into the .json file of each step, inside the open project:
+        CONVERSION/ligand_settings.json (STEP 1), TARGETS/target_settings.json (STEP 2),
+        DOCKING/docking_settings.json (CONFIG, grid of STEP 2) and DOCKING/results_settings.json (STEP 4).
+        Without an open project there is nowhere to save to and nothing is written."""
         self._collect_settings_from_widgets()
-        self.bin_dir = os.path.join(self.app_dir, "BIN")
-        if hasattr(self, "ed_jobs_dir"):
-            self.jobs_dir = self.ed_jobs_dir.text().strip() or self.jobs_dir
-        os.makedirs(self.jobs_dir, exist_ok=True)
-
-        # Job creation/selection is tied specifically to the Step 1 "Save settings" button
-        # (manage_job=True), not to the many internal call sites below that reuse this method
-        # just to persist the current UI state (ligand tool runs, target preparation, etc.) -
-        # those must not spawn a new JOBS/<...> folder on every click.
-        if manage_job:
-            if self.settings.run_type == "RESTART":
-                selected = self.settings.selected_result.strip()
-                if not selected or not os.path.isdir(self._job_dir(selected)):
-                    QMessageBox.warning(self, APP_NAME, "Select a valid Result name to restart.")
-                else:
-                    self._set_current_job(selected, create=True)
-            else:
-                self._create_new_job()
-
-        payload = {
-            "ligands_dir": self.ed_ligands_dir.text().strip(),
-            "targets_dir": self.ed_targets_dir.text().strip(),
-            "jobs_dir": self.jobs_dir,
-            "current_job_name": self.current_job_name,
-            "bin_dir": self.bin_dir,
-            "docking": asdict(self.settings),
-            "ligand": asdict(self.ligand_settings),
-            "results_view": asdict(self.result_view_settings),
-        }
-        self.ligands_dir = payload["ligands_dir"]
-        self.targets_dir = payload["targets_dir"]
-        self.bin_dir = payload["bin_dir"]
-        with open(self.settings_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        self._refresh_ligand_summary()
-        self._refresh_targets_summary()
-        self._refresh_result_folders()
-
-    def _load_settings(self) -> None:
-        if not os.path.isfile(self.settings_path):
+        if not self.project.is_open:
             return
         try:
-            with open(self.settings_path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            self.ligands_dir = payload.get("ligands_dir", self.ligands_dir)
-            self.targets_dir = payload.get("targets_dir", self.targets_dir)
-            self.jobs_dir = payload.get("jobs_dir", self.jobs_dir)
-            self.current_job_name = payload.get("current_job_name", self.current_job_name)
-            self.bin_dir = os.path.join(self.app_dir, "BIN")
-            docking = payload.get("docking", {})
-            ligand = payload.get("ligand", {})
-            results_view = payload.get("results_view", {})
-            self.settings = DockingSettings(**{**asdict(self.settings), **_known_dataclass_kwargs(DockingSettings, docking)})
-            self.ligand_settings = LigandSettings(**{**asdict(self.ligand_settings), **_known_dataclass_kwargs(LigandSettings, ligand)})
-            self.result_view_settings = ResultViewSettings(**{**asdict(self.result_view_settings), **_known_dataclass_kwargs(ResultViewSettings, results_view)})
-        except Exception as exc:
-            QMessageBox.warning(self, APP_NAME, f"Failed to load settings: {exc}")
+            self._write_json(self.project.ligand_settings_path, asdict(self.ligand_settings))
+            self._write_json(self.project.target_settings_path, asdict(self.target_settings))
+            self._write_json(self.project.docking_settings_path, asdict(self.settings))
+            self._write_json(self.project.results_settings_path, asdict(self.result_view_settings))
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not save the project settings:\n{exc}")
+            return
+        self._refresh_ligand_monitor()
+        self._refresh_targets_summary()
+
+    def _save_settings_clicked(self) -> None:
+        if self._require_project():
+            self._save_settings()
+
+    def _load_project_settings(self) -> None:
+        """Load the .json file of each step from the open project into the screen. A file that does not
+        exist (new project, or one made by an older version) leaves the current numbers as they are;
+        what belongs to a single project - the imported ligand sources and the STEP 2 form - starts empty."""
+        ligand = self._read_json(self.project.ligand_settings_path)
+        docking = self._read_json(self.project.docking_settings_path)
+        target = self._read_json(self.project.target_settings_path)
+        results_view = self._read_json(self.project.results_settings_path)
+        self.settings = DockingSettings(**{**asdict(self.settings), **_known_dataclass_kwargs(DockingSettings, docking)})
+        self.ligand_settings = LigandSettings(**{**asdict(self.ligand_settings), **_known_dataclass_kwargs(LigandSettings, ligand)})
+        if "ligand_sources" not in ligand:
+            self.ligand_settings.ligand_sources = []
+        self.target_settings = TargetSettings(**_known_dataclass_kwargs(TargetSettings, target))
+        self.result_view_settings = ResultViewSettings(
+            **{**asdict(self.result_view_settings), **_known_dataclass_kwargs(ResultViewSettings, results_view)}
+        )
+        self._apply_settings_to_widgets()
+
+    def _reload_settings_clicked(self) -> None:
+        if self._require_project():
+            self._load_project_settings()
 
     def _docking_monitor_path(self) -> str:
         """The bundled Vina-GPU fork has drifted across builds in what it names its live
@@ -3986,10 +4607,9 @@ class MainWindow(QMainWindow):
             self.pb_docking.setValue(max(0, min(100, int(round(percent_value)))))
 
     def run_docking(self) -> None:
-        self._save_settings()
-        if not self.current_job_name:
-            QMessageBox.warning(self, APP_NAME, "Click 'Save settings' in Step 1 first to select or create a job.")
+        if not self._require_project():
             return
+        self._save_settings()
         self.pb_docking.setValue(0)
         self.txt_docking_log.clear()
         self._reset_docking_monitor()
@@ -3998,12 +4618,11 @@ class MainWindow(QMainWindow):
             app_dir=self.app_dir,
             ligands_dir=self.ligands_dir,
             targets_dir=self.targets_dir,
-            results_dir=self.results_dir,
-            job_name=self.current_job_name,
+            results_dir=self.docking_dir,
+            job_name=self.project.name,
             settings=self.settings,
             docking_type=self.cb_docking_type.currentText().strip(),
             processing_type=self.cb_processing_type.currentText().strip(),
-            run_type=self.cb_run_type.currentText().strip(),
         )
         self.worker.progress_value.connect(self.pb_docking.setValue)
         self.worker.progress_text.connect(self.txt_docking_log.appendPlainText)
@@ -4017,7 +4636,7 @@ class MainWindow(QMainWindow):
         self.monitor_timer.stop()
         self.pb_docking.setValue(100)
         self.txt_docking_log.appendPlainText(message)
-        self._refresh_result_folders()
+        self._refresh_result_selectors()
         QMessageBox.information(self, APP_NAME, message)
 
     def _on_docking_failed(self, message: str) -> None:
@@ -4026,13 +4645,13 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, APP_NAME, message)
 
     def preview_selected_result(self) -> None:
-        result_name = self.cb_results_folder.currentText().strip()
+        result_name = self.project.name
         target_name = self.cb_results_target.currentText().strip()
         databank_name = self.cb_results_databank.currentText().strip()
         if not result_name:
-            QMessageBox.warning(self, APP_NAME, "Select a result folder first.")
+            QMessageBox.warning(self, APP_NAME, self._t("msg_no_project"))
             return
-        result_folder = self._job_docking_dir(result_name)
+        result_folder = self.docking_dir
         if not os.path.isdir(result_folder):
             QMessageBox.warning(self, APP_NAME, f"Result folder not found: {result_folder}")
             return
@@ -4064,7 +4683,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
         target_slug = self._safe_target_name(target_name)
-        default_name = os.path.join(self._job_docking_dir(result_name), f"{target_slug}_top{self.result_view_settings.top_results}.csv")
+        default_name = os.path.join(self.docking_dir, f"{target_slug}_top{self.result_view_settings.top_results}.csv")
         save_path, _ = QFileDialog.getSaveFileName(self, "Export filtered result", default_name, "CSV (*.csv)")
         if not save_path:
             return
@@ -4134,7 +4753,7 @@ class MainWindow(QMainWindow):
 
     def _save_result_plot(self, fig: Any, result_name: str, target_name: str, parent: QWidget) -> None:
         target_slug = self._safe_target_name(target_name)
-        default_path = os.path.join(self._job_docking_dir(result_name), f"{target_slug}_top{self.result_view_settings.top_results}.png")
+        default_path = os.path.join(self.docking_dir, f"{target_slug}_top{self.result_view_settings.top_results}.png")
         file_path, _ = QFileDialog.getSaveFileName(parent, "Save chart", default_path, "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)")
         if not file_path:
             return
@@ -4143,11 +4762,11 @@ class MainWindow(QMainWindow):
 
     def compute_redocking_rmsd(self) -> None:
         """Compare every docked REDOCK ligand against its crystal pose (heavy-atom, symmetry-aware RMSD)."""
-        result_name = self.cb_results_folder.currentText().strip()
+        result_name = self.project.name
         if not result_name:
-            QMessageBox.warning(self, APP_NAME, "Select a result folder first.")
+            QMessageBox.warning(self, APP_NAME, self._t("msg_no_project"))
             return
-        docking_dir = Path(self._job_docking_dir(result_name))
+        docking_dir = Path(self.docking_dir)
         if not docking_dir.is_dir():
             QMessageBox.warning(self, APP_NAME, f"Result folder not found: {docking_dir}")
             return
@@ -4168,7 +4787,7 @@ class MainWindow(QMainWindow):
                     if databank_filter and databank_filter != "All ligands" and group_dir.name != databank_filter:
                         continue
                     for ligand_dir in sorted(p for p in group_dir.glob("*/") if p.is_dir()):
-                        info = module_cocrystal.load_reference_info(self.app_dir, ligand_dir.name)
+                        info = module_cocrystal.load_reference_info(self.project.reference_dir, ligand_dir.name)
                         docked = ligand_dir / f"{ligand_dir.name}.pdbqt"
                         # A reference only means something for the target it was exported for.
                         if info is None or info.get("target") != target_dir.name or not docked.is_file():
@@ -4199,8 +4818,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 APP_NAME,
-                "No redocking results were found in this job. Export a co-crystal ligand with 'Export ligand for redocking' "
-                "in STEP 3, prepare the target with the same name, convert the REDOCK group in STEP 2 and run the docking first."
+                "No redocking results were found in this project. Export a co-crystal ligand with 'Export ligand for redocking' "
+                "in STEP 2, prepare the target with the same name, convert the REDOCK group in STEP 1 and run the docking first."
                 + detail,
             )
             return
@@ -4220,12 +4839,12 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, APP_NAME, message)
 
     def generate_final_report(self) -> None:
-        result_name = self.cb_results_folder.currentText().strip()
+        result_name = self.project.name
         if not result_name:
-            QMessageBox.warning(self, APP_NAME, "Select a result folder first.")
+            QMessageBox.warning(self, APP_NAME, self._t("msg_no_project"))
             return
-        job_dir = self._job_dir(result_name)
-        docking_dir = self._job_docking_dir(result_name)
+        job_dir = self.project.path
+        docking_dir = self.docking_dir
         if not os.path.isdir(docking_dir):
             QMessageBox.warning(self, APP_NAME, f"Result folder not found: {docking_dir}")
             return
@@ -4324,12 +4943,12 @@ class MainWindow(QMainWindow):
 
     def _build_filtered_result_frame(self) -> tuple[Any, str, str]:
         self._collect_result_settings_from_widgets()
-        result_name = self.cb_results_folder.currentText().strip()
+        result_name = self.project.name
         target_name = self.cb_results_target.currentText().strip()
         databank_name = self.cb_results_databank.currentText().strip()
         if not result_name:
-            raise RuntimeError("Select a result folder first.")
-        csv_path = self._run_csv_path(self._job_docking_dir(result_name), result_name)
+            raise RuntimeError(self._t("msg_no_project"))
+        csv_path = self._run_csv_path(self.docking_dir, result_name)
         if not os.path.isfile(csv_path):
             raise RuntimeError(f"Result CSV not found: {csv_path}. Click 'Load raw CSV' first.")
         frame = self._load_result_dataframe(csv_path)
@@ -4365,7 +4984,7 @@ class MainWindow(QMainWindow):
         try:
             names = module_compound_names.resolve_compound_names(
                 list(frame[ligand_col].astype(str)),
-                self._job_docking_dir(result_name),
+                self.docking_dir,
                 id_to_smiles=id_to_smiles,
             )
         except Exception:
@@ -4398,12 +5017,6 @@ class MainWindow(QMainWindow):
             for col_idx, value in enumerate(row):
                 self.tbl_results.setItem(row_idx, col_idx, QTableWidgetItem(str(value)))
         self.tbl_results.resizeColumnsToContents()
-
-    def launch_legacy_codoc(self) -> None:
-        if not os.path.isfile(self.legacy_codoc):
-            QMessageBox.warning(self, APP_NAME, f"Legacy script not found: {self.legacy_codoc}")
-            return
-        subprocess.Popen(["bash", self.legacy_codoc], cwd=os.path.dirname(self.legacy_codoc))
 
     def show_requirements_installer(self) -> None:
         dialog = RequirementsInstaller(app_dir=self.app_dir, parent=self)
@@ -4563,6 +5176,7 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    codoc_terminal.setup_capture()      # keeps the session output for Help > Terminal
     app = QApplication(sys.argv)
     # Ties the running window to the CODOC.desktop launcher (StartupWMClass=CODOC there matches
     # this) so the panel/window-list picks up the same icon as the menu entry, instead of relying

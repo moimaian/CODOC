@@ -1,0 +1,23 @@
+Package: codoc
+Version: @VERSION@
+Section: science
+Priority: optional
+Architecture: amd64
+Depends: python3 (>= 3.10), python3-venv, python3-pip
+Recommends: python3.10, rsync, wget, unzip
+Maintainer: Moisés Maia <moimaian@gmail.com>
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/moimaian/CODOC
+Description: Multi-target molecular docking platform (AutoDock Vina / Vina-GPU)
+ CODOC is a PyQt5-based graphical tool that automates multi-target virtual
+ screening: preparation of ligands (Open Babel or RDKit with Meeko) and of
+ targets (ADFRsuite, PDB2PQR/PROPKA), druggability filtering, grid box
+ definition (manual, from a co-crystallized ligand or by P2Rank pockets),
+ molecular docking on CPU (AutoDock Vina 1.2.5) or GPU (Vina-GPU 2.1),
+ redocking validation by RMSD, and result tables, plots and a final report.
+ .
+ This package installs the application files to /opt/codoc and a menu
+ launcher. On first run, CODOC itself creates an isolated Python 3.10
+ virtual environment at ~/.venv/CODOC and installs its own scientific
+ dependencies (RDKit, Meeko, etc.) into it — this package does not do that
+ as root during installation, by design (see packaging/deb/README.md).

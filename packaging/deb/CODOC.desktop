@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CODOC
+Comment=Multi-target molecular docking platform
+Comment[pt_BR]=Plataforma de docking molecular multi-alvo
+Exec=/usr/bin/codoc
+Icon=/opt/codoc/ICONS/logo_codocP.png
+Terminal=false
+Categories=Qt;Science;Chemistry;
+StartupNotify=false
+StartupWMClass=CODOC
