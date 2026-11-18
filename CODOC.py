@@ -108,7 +108,7 @@ except Exception:
     module_compound_names = None
 
 from PyQt5.QtCore import QSettings, QSize, QThread, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QGuiApplication, QIcon, QPixmap
+from PyQt5.QtGui import QFont, QFontMetrics, QGuiApplication, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QAction,
@@ -454,6 +454,13 @@ class DockingSettings:
     target_ph: float = 7.4
 
 
+# The limits of the Druggability Filter (STEP 1): LigandSettings attribute names, in the order shown.
+DRUGGABILITY_LIMITS = (
+    "mw_min", "mw_max", "logp_min", "logp_max",
+    "h_donor_max", "h_acceptor_max", "rotatable_bonds_max", "tpsa_max",
+)
+
+
 @dataclass
 class LigandSettings:
     min_file_size: int = 10
@@ -473,6 +480,8 @@ class LigandSettings:
     h_donor_max: int = 5
     h_acceptor_max: int = 10
     tpsa_max: float = 140.0
+    # Which of the eight limits above "Apply druggability filter" applies (settings attribute name -> on/off).
+    druggability_enabled: dict[str, bool] = field(default_factory=lambda: dict.fromkeys(DRUGGABILITY_LIMITS, True))
     # Files and folders the user imported into this project (STEP 1 "Ligands" > Browse). Only a
     # record - the copies live in CONVERSION/LIGANDS; the originals are never touched.
     ligand_sources: list[str] = field(default_factory=list)
@@ -482,12 +491,13 @@ class LigandSettings:
 class TargetSettings:
     """What the STEP 2 form held when it was last saved (the grid numbers, pH and spacing live in
     DockingSettings because the docking worker and the final report read them from there)."""
-    mode_index: int = 0
+    mode_index: int = 0           # 0 = Rigid Docking, 1 = Flexible Docking
     target_name: str = ""
     target_file: str = ""
     rigid_file: str = ""
     flex_file: str = ""
     grid_file: str = ""
+    grid_ligand_file: str = ""
 
 
 @dataclass
@@ -536,6 +546,22 @@ def _parse_vina_pose_data(output_file: str) -> tuple[str, str, str]:
 
 
 RESULT_CSV_HEADER = ["LIGAND", "SMILES", "LIGAND DATABANK", "TARGET", "BINDING ENERGY (Kcal/mol)", "RMSD (mean)"]
+
+
+def _parse_grid_file(path: str) -> dict[str, float | int]:
+    """Values found in a grid.txt (`spacing`, `npts` = box size and `center` lines): any of
+    spacing, size_x/y/z and center_x/y/z that the file holds."""
+    grid: dict[str, float | int] = {}
+    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            parts = line.strip().split()
+            if len(parts) >= 4 and parts[0] == "center":
+                grid.update(center_x=float(parts[1]), center_y=float(parts[2]), center_z=float(parts[3]))
+            elif len(parts) >= 4 and parts[0] == "npts":
+                grid.update(size_x=int(float(parts[1])), size_y=int(float(parts[2])), size_z=int(float(parts[3])))
+            elif len(parts) >= 2 and parts[0] == "spacing":
+                grid["spacing"] = float(parts[1])
+    return grid
 
 
 class DockingWorker(QThread):
@@ -694,17 +720,7 @@ class DockingWorker(QThread):
             "size_y": self.settings.grid_y_size,
             "size_z": self.settings.grid_z_size,
         }
-        with open(path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                parts = line.strip().split()
-                if len(parts) >= 4 and parts[0] == "center":
-                    grid["center_x"] = float(parts[1])
-                    grid["center_y"] = float(parts[2])
-                    grid["center_z"] = float(parts[3])
-                elif len(parts) >= 4 and parts[0] == "npts":
-                    grid["size_x"] = int(float(parts[1]))
-                    grid["size_y"] = int(float(parts[2]))
-                    grid["size_z"] = int(float(parts[3]))
+        grid.update(_parse_grid_file(str(path)))
         return grid
 
     def _run_cpu_jobs(self, result_folder: str, jobs: list[dict[str, str]]) -> None:
@@ -1521,16 +1537,18 @@ class LigandToolsWorker(QThread):
                     shutil.move(str(file_path), destination / file_path.name)
                     continue
                 props = self._compute_lipinski_properties(mol)
-                passed = (
-                    props["MW"] > self.settings.mw_min
-                    and props["MW"] < self.settings.mw_max
-                    and props["logP"] > self.settings.logp_min
-                    and props["logP"] < self.settings.logp_max
-                    and props["rotors"] < self.settings.rotatable_bonds_max
-                    and props["HBA2"] < self.settings.h_acceptor_max
-                    and props["HBD"] < self.settings.h_donor_max
-                    and props["TPSA"] < self.settings.tpsa_max
-                )
+                limits = {
+                    "mw_min": props["MW"] > self.settings.mw_min,
+                    "mw_max": props["MW"] < self.settings.mw_max,
+                    "logp_min": props["logP"] > self.settings.logp_min,
+                    "logp_max": props["logP"] < self.settings.logp_max,
+                    "h_donor_max": props["HBD"] < self.settings.h_donor_max,
+                    "h_acceptor_max": props["HBA2"] < self.settings.h_acceptor_max,
+                    "rotatable_bonds_max": props["rotors"] < self.settings.rotatable_bonds_max,
+                    "tpsa_max": props["TPSA"] < self.settings.tpsa_max,
+                }
+                # only the limits whose checkbox is on take part in the filter
+                passed = all(met for key, met in limits.items() if self.settings.druggability_enabled.get(key, True))
                 if not passed:
                     shutil.move(str(file_path), destination / file_path.name)
         return f"Druggability filter finished. Rejected ligands were moved to {self.drug_dir}."
@@ -2113,7 +2131,7 @@ class MainWindow(QMainWindow):
         # Only the warning is shown: once a project is open, Project ID already names it.
         self.lbl_proj_status.setVisible(not self.project.is_open)
         self.lbl_proj_status.setText(self._t("cfg_proj_none"))
-        self.lbl_proj_status.setStyleSheet("font-size:9pt;color:#E74C3C;")
+        self.lbl_proj_status.setStyleSheet("font-size:9pt;color:#B5766F;")
 
     def _update_window_title(self) -> None:
         title = self._t("app_titulo")
@@ -2235,7 +2253,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _ensure_button_text_fits(button: QPushButton) -> None:
         text = button.text() or ""
-        if not text.strip():
+        if not text.strip() or button.property("uniform_width"):
             return
         button.ensurePolished()
         required_width = button.sizeHint().width() + 8
@@ -2287,9 +2305,11 @@ class MainWindow(QMainWindow):
     def _apply_initial_window_size(self, screen) -> None:
         hint = self.sizeHint()
         home_hint = self.tabs.widget(0).sizeHint() if hasattr(self, "tabs") and self.tabs.count() else hint
-        width_hint = max(hint.width() + 80, home_hint.width() + 120)
+        # Every tab fits in its own minimum width (the step tabs' 1000 px groups; HOME's groups are the
+        # same width), so the window opens only a little wider than that, with no horizontal scroll.
+        width_hint = hint.width() + 24
         height_hint = max(hint.height() + 110, home_hint.height() + 220)
-        width = min(max(width_hint, 1220), int(screen.width() * 0.78))
+        width = min(width_hint, int(screen.width() * 0.78))
         height = min(max(height_hint, 980), int(screen.height() * 0.94))
         self.resize(width, height)
         self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
@@ -2316,7 +2336,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
-        inner_layout.setContentsMargins(36, 32, 36, 24)
+        inner_layout.setContentsMargins(9, 32, 9, 24)      # same side margins as the step tabs
         inner_layout.setSpacing(16)
         scroll.setWidget(inner)
 
@@ -2353,6 +2373,16 @@ class MainWindow(QMainWindow):
             "QGroupBox::title { color: #29B6D8; }"
         )
 
+        def add_centered_group(widget: QWidget, group_width: int = 1000) -> None:
+            # 1000 px like the groups of the step tabs, so HOME never needs more width than they do
+            widget.setMinimumWidth(group_width)
+            widget.setMaximumWidth(group_width)
+            row_wrap = QHBoxLayout()
+            row_wrap.addStretch(1)
+            row_wrap.addWidget(widget)
+            row_wrap.addStretch(1)
+            inner_layout.addLayout(row_wrap)
+
         for title_key, rows in (
             ("home_grp_cpu", self._home_hw_cpu_info()),
             ("home_grp_gpu", self._home_hw_gpu_info()),
@@ -2372,23 +2402,30 @@ class MainWindow(QMainWindow):
                 value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 value_label.setWordWrap(True)
                 hw_form.addRow(key_label, value_label)
-            hw_row.addWidget(hw_grp, 1, Qt.AlignTop)
+            hw_row.addWidget(hw_grp, hw_grp.sizeHint().width())     # share the row by content width; all three get the height of the tallest
 
         hw_wrap = QWidget()
         hw_wrap.setLayout(hw_row)
-        inner_layout.addWidget(hw_wrap)
+        add_centered_group(hw_wrap)
 
         sw_grp = QGroupBox()
         self._tr("home_grp_sw", sw_grp.setTitle)
         sw_grp.setStyleSheet(home_group_style)
         sw_grid = QGridLayout(sw_grp)
-        sw_grid.setHorizontalSpacing(24)
+        # Three (name, version) pairs separated by a spacer column: the name sits right next to its
+        # version, and the first pair gets most of the spare width so the long "Platform" value
+        # does not need to wrap, while the narrower versions of the other two pairs stay compact.
+        sw_grid.setHorizontalSpacing(8)
         sw_grid.setVerticalSpacing(4)
-        sw_items = self._home_sw_versions()
         cols = 3
+        for pair in range(cols):
+            if pair:
+                sw_grid.setColumnMinimumWidth(pair * 3 - 1, 28)
+            sw_grid.setColumnStretch(pair * 3 + 1, 4 if pair == 0 else 1)
+        sw_items = self._home_sw_versions()
         for idx, (name, version) in enumerate(sw_items):
             row = idx // cols
-            col = (idx % cols) * 2
+            col = (idx % cols) * 3
             ok = version != "not installed"
             name_label = QLabel(name)
             name_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
@@ -2397,9 +2434,10 @@ class MainWindow(QMainWindow):
                 f"font-weight:bold;font-size:9pt;color:{'#C9D1D9' if ok else '#E74C3C'};"
             )
             version_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            version_label.setWordWrap(True)
             sw_grid.addWidget(name_label, row, col)
             sw_grid.addWidget(version_label, row, col + 1)
-        inner_layout.addWidget(sw_grp)
+        add_centered_group(sw_grp)
 
         pipe_grp = QGroupBox()
         self._tr("home_grp_pipeline", pipe_grp.setTitle)
@@ -2421,11 +2459,11 @@ class MainWindow(QMainWindow):
             self._tr(name_key, lambda txt, w=step_label: w.setText(f"<b>{txt}</b>"))
             desc_label = QLabel()
             desc_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
-            desc_label.setWordWrap(False)
+            desc_label.setWordWrap(True)
             self._tr(desc_key, desc_label.setText)
             pipe_grid.addWidget(step_label, row, 0)
             pipe_grid.addWidget(desc_label, row, 1)
-        inner_layout.addWidget(pipe_grp)
+        add_centered_group(pipe_grp)
 
         bottom_separator = QFrame()
         bottom_separator.setFrameShape(QFrame.HLine)
@@ -2637,6 +2675,27 @@ class MainWindow(QMainWindow):
             pass
         return rows
 
+    def _avg_docking_result_bytes(self, sample_limit: int = 300) -> float:
+        """Average disk size of the result of ONE docked ligand (DOCKING/<target>/<group>/<ligand>/),
+        measured over up to `sample_limit` ligand folders of the existing projects, newest first.
+        0 when no project holds a docking result yet."""
+        sizes: list[int] = []
+        for project in list_projects(self.app_dir):
+            docking = os.path.join(projects_root(self.app_dir), project, "DOCKING")
+            try:
+                for target in os.scandir(docking):
+                    for group in (os.scandir(target.path) if target.is_dir() else []):
+                        for ligand in (os.scandir(group.path) if group.is_dir() else []):
+                            if not ligand.is_dir():
+                                continue
+                            with os.scandir(ligand.path) as files:
+                                sizes.append(sum(f.stat().st_size for f in files if f.is_file()))
+                            if len(sizes) >= sample_limit:
+                                return sum(sizes) / len(sizes)
+            except OSError:
+                continue
+        return sum(sizes) / len(sizes) if sizes else 0.0
+
     def _home_hw_storage_info(self) -> list[tuple[str, str]]:
         """Disk where CODOC is installed (PROJECTS/, BASE/ and every docking result live there)."""
         rows: list[tuple[str, str]] = []
@@ -2671,6 +2730,13 @@ class MainWindow(QMainWindow):
                     rows.append(("Media type", media))
         except Exception:
             pass
+
+        # How many more docked ligands the free space holds, from the measured size of the results
+        # already on disk. CODOC stores no float32/float16 data, so both lines give the same estimate.
+        average = self._avg_docking_result_bytes()
+        estimate = f"~{int(usage.free / average):,} ligands".replace(",", ".") if average else "N/A"
+        rows.append(("Fits (float32)", estimate))
+        rows.append(("Fits (float16)", estimate))
         return rows
 
     def _home_sw_versions(self) -> list[tuple[str, str]]:
@@ -2757,12 +2823,21 @@ class MainWindow(QMainWindow):
         ))
         rows.append(("ADFRsuite", "available" if os.path.isfile(os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")) else "not installed"))
         rows.append(("Vina-GPU", get_vina_gpu_version() or "not installed"))
+        # PDB2PQR (protonation) and PROPKA (the pKa predictor it calls) are separate packages with their own versions
         try:
             find_pdb2pqr(os.path.join(venv_paths("CODOC")["venv_dir"], "bin"))
-            pdb2pqr_status = "available"
+            try:
+                pdb2pqr_status = importlib.metadata.version("pdb2pqr")
+            except importlib.metadata.PackageNotFoundError:
+                pdb2pqr_status = "available"
         except TargetPrepareError:
             pdb2pqr_status = "not installed"
-        rows.append(("PDB2PQR / PROPKA", pdb2pqr_status))
+        rows.append(("PDB2PQR", pdb2pqr_status))
+        try:
+            propka_status = importlib.metadata.version("propka")
+        except importlib.metadata.PackageNotFoundError:
+            propka_status = "not installed"
+        rows.append(("PROPKA", propka_status))
         return rows
 
     def _settings_buttons_row(self) -> QHBoxLayout:
@@ -2828,6 +2903,7 @@ class MainWindow(QMainWindow):
         self.lbl_proj_id.setStyleSheet("font-weight:bold;color:#29B6D8;")
         self.lbl_proj_status = QLabel()
         self.lbl_proj_status.setWordWrap(True)
+        self.lbl_proj_status.setAlignment(Qt.AlignCenter)
         self.lbl_proj_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         btn_project = QPushButton()
         btn_project.setFixedSize(230, 38)
@@ -3102,32 +3178,44 @@ class MainWindow(QMainWindow):
         settings_wrap.setLayout(settings_row)
         add_centered_group(settings_wrap)
 
+        # Druggability Filter (left) and Ligand actions (right) share one row; together they take the same
+        # 1000 px as the other groups.
         druggability_box = QGroupBox()
         self._tr("s1_grp_druggability", druggability_box.setTitle)
         druggability_form = QGridLayout(druggability_box)
+        # Each limit has a checkbox (captioned with the limit's name) that turns it on or off for the
+        # filter; an off limit also disables its box.
         druggability_rows = [
-            ("s1_lbl_mw_min", self.sp_lig_mw_min, "s1_lbl_mw_max", self.sp_lig_mw_max),
-            ("s1_lbl_logp_min", self.sp_lig_logp_min, "s1_lbl_logp_max", self.sp_lig_logp_max),
-            ("s1_lbl_hdonor_max", self.sp_lig_hd, "s1_lbl_hacceptor_max", self.sp_lig_ha),
-            ("s1_lbl_rot_max", self.sp_lig_rot, "s1_lbl_tpsa_max", self.sp_lig_tpsa),
+            ("mw_min", "s1_lbl_mw_min", self.sp_lig_mw_min),
+            ("mw_max", "s1_lbl_mw_max", self.sp_lig_mw_max),
+            ("logp_min", "s1_lbl_logp_min", self.sp_lig_logp_min),
+            ("logp_max", "s1_lbl_logp_max", self.sp_lig_logp_max),
+            ("h_donor_max", "s1_lbl_hdonor_max", self.sp_lig_hd),
+            ("h_acceptor_max", "s1_lbl_hacceptor_max", self.sp_lig_ha),
+            ("rotatable_bonds_max", "s1_lbl_rot_max", self.sp_lig_rot),
+            ("tpsa_max", "s1_lbl_tpsa_max", self.sp_lig_tpsa),
         ]
-        for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(druggability_rows):
-            add_field_row(druggability_form, row_idx, 0, key_left, widget_left)
-            add_field_row(druggability_form, row_idx, 2, key_right, widget_right)
+        self.chk_lig_drug: dict[str, QCheckBox] = {}
+        for row_idx, (limit_key, label_key, widget) in enumerate(druggability_rows):
+            check = QCheckBox()
+            self._tr(label_key, check.setText)
+            check.setChecked(True)
+            check.toggled.connect(widget.setEnabled)
+            self.chk_lig_drug[limit_key] = check
+            druggability_form.addWidget(check, row_idx, 0)
+            druggability_form.addWidget(widget, row_idx, 1)
 
         btn_druggability_filter = QPushButton()
         self._tr("s1_act_druggability_filter", btn_druggability_filter.setText)
         btn_druggability_filter.setFixedWidth(255)
         btn_druggability_filter.clicked.connect(lambda: self._run_ligand_tool("druggability_filter"))
-        druggability_form.addWidget(btn_druggability_filter, len(druggability_rows), 0, 1, 4, Qt.AlignCenter)
-        add_centered_group(druggability_box)
+        druggability_form.addWidget(btn_druggability_filter, len(druggability_rows), 0, 1, 2, Qt.AlignCenter)
 
         actions_box = QGroupBox()
         self._tr("s1_grp_actions", actions_box.setTitle)
         actions_layout = QGridLayout(actions_box)
-        action_button_width = 255
         # (label key, handler, gray) - "gray" applies _SS_BTN_SECONDARY; the one exception left at
-        # its default accent styling is Convert ligands to PDBQT, the main/primary action here.
+        # its default accent styling is Convert to PDBQT, the main/primary action here.
         ligand_actions = [
             ("s1_act_split_multimodel", lambda: self._run_ligand_tool("split_multimodel"), True),
             ("s1_act_split_large_folders", lambda: self._run_ligand_tool("split_large_folders"), True),
@@ -3138,20 +3226,41 @@ class MainWindow(QMainWindow):
             ("s1_act_generate_lipinski", lambda: self._run_ligand_tool("generate_lipinski"), True),
             ("s1_act_fix_macrocycles", lambda: self._run_ligand_tool("fix_macrocycles"), True),
         ]
+        action_buttons: list[QPushButton] = []
         for idx, (label_key, handler, is_gray) in enumerate(ligand_actions):
             button = QPushButton()
             self._tr(label_key, button.setText)
-            button.setFixedWidth(action_button_width)
             if is_gray:
                 button.setStyleSheet(_SS_BTN_SECONDARY)
+            button.setProperty("uniform_width", True)      # sized below, not by _ensure_button_text_fits
             button.clicked.connect(handler)
-            actions_layout.addWidget(button, idx // 3, idx % 3)
+            actions_layout.addWidget(button, idx // 2, idx % 2)       # two buttons per row
+            action_buttons.append(button)
             if label_key == "s1_act_fix_macrocycles":
                 self.btn_lig_fix_macrocycles = button
+        # One width for all eight: the widest caption of either language, so it never clips after a switch.
+        # the buttons' font is set by the application stylesheet (10pt bold), which a button not yet
+        # shown in the window has not received - so the metrics are taken from that same font.
+        bold_font = QFont("DejaVu Sans", 10, QFont.Bold)
+        bold_metrics = QFontMetrics(bold_font)
+        action_button_width = max(
+            bold_metrics.horizontalAdvance(i18n.t(label_key, language)) + 2 * 16 + 2 * 1 + 8   # padding, border, margin
+            for _button, (label_key, _handler, _gray) in zip(action_buttons, ligand_actions)
+            for language in ("en", "pt")
+        )
+        for button in action_buttons:
+            button.setFixedWidth(action_button_width)
         actions_layout.setHorizontalSpacing(12)
         actions_layout.setVerticalSpacing(10)
         actions_layout.setAlignment(Qt.AlignCenter)
-        add_centered_group(actions_box)
+
+        druggability_actions_row = QHBoxLayout()
+        druggability_actions_row.setSpacing(14)
+        druggability_actions_row.addWidget(druggability_box, 1)
+        druggability_actions_row.addWidget(actions_box, 0)
+        druggability_actions_wrap = QWidget()
+        druggability_actions_wrap.setLayout(druggability_actions_row)
+        add_centered_group(druggability_actions_wrap)
 
         # "Fix macrocycles for GPU" only matters for a GPU docking run (CONFIG Processing type) -
         # enabled/disabled in sync with that combo instead of being always-on regardless of it.
@@ -3177,8 +3286,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._title("title_step2"))
 
         targets_group_width = 1000
-        target_field_width = 320
-        target_button_width = 240
 
         def add_centered_group(widget: QWidget, group_width: int = targets_group_width) -> None:
             widget.setMinimumWidth(group_width)
@@ -3189,186 +3296,264 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
+        # Two groups side by side (1000 px in all): "Target Parameters" (how the receptor is prepared) and
+        # "Grid Parameters" (where docking is run). Every label sits above its field, a file box takes the
+        # whole row with its Select button below it, and "Prepare target" is under both groups.
+        bold_metrics = QFontMetrics(QFont("DejaVu Sans", 10, QFont.Bold))
+
+        def button_width(*label_keys: str) -> int:
+            """Width that fits the widest caption of the given buttons in either language."""
+            return max(
+                bold_metrics.horizontalAdvance(i18n.t(key, language)) + 2 * 16 + 2 + 8
+                for key in label_keys for language in ("en", "pt")
+            )
+
+        action_button_width = button_width(
+            "s2_btn_choose_target", "s2_btn_choose_rigid", "s2_btn_choose_flex", "s2_btn_choose_grid",
+            "s2_btn_select_ligand", "s2_btn_generate_grid", "s2_btn_export_redock",
+        )
+
+        def gray_button(label_key: str, handler) -> QPushButton:
+            button = QPushButton()
+            self._tr(label_key, button.setText)
+            button.setStyleSheet(_SS_BTN_SECONDARY)
+            button.setFixedWidth(action_button_width)
+            button.clicked.connect(handler)
+            return button
+
+        def stacked(field: QWidget, button: QPushButton) -> QWidget:
+            """The field on a full row and its (fixed width) button centred right below it."""
+            column = QVBoxLayout()
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(6)
+            column.addWidget(field)
+            column.addWidget(button, 0, Qt.AlignHCenter)
+            wrap = QWidget(); wrap.setLayout(column)
+            return wrap
+
+        def add_row(form: QFormLayout, label_key: str, field: QWidget) -> None:
+            label = QLabel(); self._tr(label_key, label.setText)
+            form.addRow(label, field)
+
+        # ---------------------------------------------------------------- Target Parameters
+        # Two ways to prepare the receptor, chosen like the grid methods (ticking one disables the other):
+        # 1. Rigid Docking (a structure file is protonated and converted) and 2. Flexible Docking (the
+        # rigid and flexible receptor PDBQT files are given ready).
         target_box = QGroupBox()
-        self._tr("s2_grp_prepare_target", target_box.setTitle)
-        target_form = QFormLayout(target_box)
-        target_form.setHorizontalSpacing(18)
-        target_form.setVerticalSpacing(14)
-        self.cb_target_mode = QComboBox()
-        self.cb_target_mode.addItems(["Rigid target from source file", "Flexible target from prepared PDBQT files"])
-        self.cb_target_mode.setFixedWidth(target_field_width)
-        self.cb_target_mode.currentTextChanged.connect(self._toggle_target_mode)
+        self._tr("s2_grp_target_params", target_box.setTitle)
+        target_layout = QVBoxLayout(target_box)
+        target_layout.setSpacing(6)
+        self._target_modes: dict[str, tuple[QCheckBox, list[QWidget]]] = {}
+        self._target_mode_group = QButtonGroup(self)      # exactly one of the two is always ticked
+        self._target_mode_group.setExclusive(True)
+
+        def add_mode(mode: str, title_key: str, widgets: list[QWidget]) -> QCheckBox:
+            check = QCheckBox()
+            self._tr(title_key, check.setText)
+            check.toggled.connect(lambda _checked: self._sync_target_modes())
+            self._target_mode_group.addButton(check)
+            self._target_modes[mode] = (check, widgets)
+            return check
+
+        def captioned(label_key: str, field: QWidget) -> QWidget:
+            """A label above its field (or field block)."""
+            column = QVBoxLayout()
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(3)
+            label = QLabel(); self._tr(label_key, label.setText)
+            column.addWidget(label)
+            column.addWidget(field)
+            wrap = QWidget(); wrap.setLayout(column)
+            return wrap
+
+        def inline(label_key: str, field: QWidget) -> tuple[QWidget, QLabel]:
+            """A label with its field on the same line."""
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            label = QLabel(); self._tr(label_key, label.setText)
+            row.addWidget(label)
+            row.addWidget(field, 1)
+            wrap = QWidget(); wrap.setLayout(row)
+            return wrap, label
 
         self.ed_target_name = QLineEdit()
-        self.ed_target_name.setFixedWidth(target_field_width)
         self._tr("s2_ph_target_name", self.ed_target_name.setPlaceholderText)
-
         self.ed_target_file = QLineEdit()
-        self.ed_target_file.setFixedWidth(target_field_width)
-        btn_choose_target = QPushButton()
-        self._tr("s2_btn_choose_target", btn_choose_target.setText)
-        btn_choose_target.setFixedWidth(target_button_width)
-        btn_choose_target.clicked.connect(self._choose_target_file)
-        row_target = QHBoxLayout()
-        row_target.setContentsMargins(0, 0, 0, 0)
-        row_target.setSpacing(10)
-        row_target.addWidget(self.ed_target_file)
-        row_target.addWidget(btn_choose_target)
-        row_target.addStretch(1)
-        wrap_target = QWidget(); wrap_target.setLayout(row_target)
+        self.ed_target_file.textChanged.connect(self._on_target_structure_changed)
+        self.ed_target_rigid_file = QLineEdit()
+        self.ed_target_rigid_file.textChanged.connect(self._on_target_structure_changed)
+        self.ed_target_flex_file = QLineEdit()
 
+        # Target name (the name of the target's folder) is common to both modes: first, label and box on one line
+        name_block, _name_label = inline("s2_lbl_target_name", self.ed_target_name)
+        target_layout.addWidget(name_block)
+
+        # 1. Rigid Docking: the Target file and, right after its Select button, the Protonation pH (only the
+        # rigid preparation protonates the receptor; a flexible one is given already protonated)
         self.sp_target_ph = QDoubleSpinBox()
         self.sp_target_ph.setRange(0.0, 14.0)
         self.sp_target_ph.setDecimals(2)
         self.sp_target_ph.setSingleStep(0.1)
         self.sp_target_ph.setValue(7.4)
-        self.sp_target_ph.setFixedWidth(target_field_width)
         self.sp_target_ph.setToolTip(
             "Environment pH used by PROPKA to compute each ionizable residue's pKa "
             "(considering its 3D microenvironment) and protonate the receptor accordingly."
         )
+        rigid_file_block = captioned("s2_lbl_target_file", stacked(self.ed_target_file, gray_button("s2_btn_choose_target", self._choose_target_file)))
+        ph_block, _ph_label = inline("s2_lbl_protonation_ph", self.sp_target_ph)
+        self.chk_target_rigid = add_mode("rigid", "s2_opt_rigid", [rigid_file_block, ph_block])
+        target_layout.addSpacing(12)
+        target_layout.addWidget(self.chk_target_rigid)
+        target_layout.addWidget(rigid_file_block)
+        target_layout.addWidget(ph_block)
 
-        self.ed_target_rigid_file = QLineEdit()
-        self.ed_target_rigid_file.setFixedWidth(target_field_width)
-        btn_choose_rigid = QPushButton()
-        self._tr("s2_btn_choose_rigid", btn_choose_rigid.setText)
-        btn_choose_rigid.setFixedWidth(target_button_width)
-        btn_choose_rigid.clicked.connect(lambda: self._choose_pdbqt_file(self.ed_target_rigid_file, "Select rigid receptor PDBQT"))
-        row_rigid = QHBoxLayout()
-        row_rigid.setContentsMargins(0, 0, 0, 0)
-        row_rigid.setSpacing(10)
-        row_rigid.addWidget(self.ed_target_rigid_file)
-        row_rigid.addWidget(btn_choose_rigid)
-        row_rigid.addStretch(1)
-        wrap_rigid = QWidget(); wrap_rigid.setLayout(row_rigid)
+        # 2. Flexible Docking: the rigid and the flexible receptor files
+        rigid_receptor_block = captioned("s2_lbl_rigid_receptor", stacked(
+            self.ed_target_rigid_file,
+            gray_button("s2_btn_choose_rigid", lambda: self._choose_pdbqt_file(self.ed_target_rigid_file, "Select rigid receptor PDBQT")),
+        ))
+        flex_receptor_block = captioned("s2_lbl_flex_receptor", stacked(
+            self.ed_target_flex_file,
+            gray_button("s2_btn_choose_flex", lambda: self._choose_pdbqt_file(self.ed_target_flex_file, "Select flexible receptor PDBQT")),
+        ))
+        self.chk_target_flexible = add_mode("flexible", "s2_opt_flexible", [rigid_receptor_block, flex_receptor_block])
+        target_layout.addSpacing(12)
+        target_layout.addWidget(self.chk_target_flexible)
+        target_layout.addWidget(rigid_receptor_block)
+        target_layout.addWidget(flex_receptor_block)
 
-        self.ed_target_flex_file = QLineEdit()
-        self.ed_target_flex_file.setFixedWidth(target_field_width)
-        btn_choose_flex = QPushButton()
-        self._tr("s2_btn_choose_flex", btn_choose_flex.setText)
-        btn_choose_flex.setFixedWidth(target_button_width)
-        btn_choose_flex.clicked.connect(lambda: self._choose_pdbqt_file(self.ed_target_flex_file, "Select flexible receptor PDBQT"))
-        row_flex = QHBoxLayout()
-        row_flex.setContentsMargins(0, 0, 0, 0)
-        row_flex.setSpacing(10)
-        row_flex.addWidget(self.ed_target_flex_file)
-        row_flex.addWidget(btn_choose_flex)
-        row_flex.addStretch(1)
-        wrap_flex = QWidget(); wrap_flex.setLayout(row_flex)
+        # ligands found in the PDB of "Target file", offered both for the redocking export (here) and
+        # as a grid source (option 4 of Grid Parameters)
+        self.cb_redock_ligand = QComboBox()
+        btn_export_redock = gray_button("s2_btn_export_redock", self.export_cocrystal_ligand_for_redocking)
+        self._tr("s2_tooltip_export_redock", btn_export_redock.setToolTip)
+        target_layout.addSpacing(12)
+        target_layout.addWidget(captioned("s2_lbl_redock_ligand", self.cb_redock_ligand))
+        target_layout.addWidget(btn_export_redock, 0, Qt.AlignHCenter)
+        target_layout.addStretch(1)
 
-        self.ed_target_grid_file = QLineEdit()
-        self.ed_target_grid_file.setFixedWidth(target_field_width)
-        btn_choose_grid = QPushButton()
-        self._tr("s2_btn_choose_grid", btn_choose_grid.setText)
-        btn_choose_grid.setFixedWidth(target_button_width)
-        btn_choose_grid.clicked.connect(lambda: self._choose_grid_file(self.ed_target_grid_file, "Select grid.txt (optional)"))
-        row_grid = QHBoxLayout()
-        row_grid.setContentsMargins(0, 0, 0, 0)
-        row_grid.setSpacing(10)
-        row_grid.addWidget(self.ed_target_grid_file)
-        row_grid.addWidget(btn_choose_grid)
-        row_grid.addStretch(1)
-        wrap_grid = QWidget(); wrap_grid.setLayout(row_grid)
+        # ---------------------------------------------------------------- Grid Parameters
+        # Five ways to get the grid. Ticking one disables the others; each one, when run, fills the
+        # Grid center / size / spacing boxes below, and "Prepare target" writes grid.txt from them.
+        grid_box = QGroupBox()
+        self._tr("s2_grp_grid_params", grid_box.setTitle)
+        grid_layout = QVBoxLayout(grid_box)
+        grid_layout.setSpacing(4)
+        self._grid_options: dict[str, tuple[QCheckBox, QWidget]] = {}
+        self._grid_method_group = QButtonGroup(self)      # exactly one method is always ticked
+        self._grid_method_group.setExclusive(True)
 
-        grid_param_field_width = 140
-        self.sp_center_x = QDoubleSpinBox(); self.sp_center_x.setRange(-9999.0, 9999.0); self.sp_center_x.setDecimals(3); self.sp_center_x.setFixedWidth(grid_param_field_width)
-        self.sp_center_y = QDoubleSpinBox(); self.sp_center_y.setRange(-9999.0, 9999.0); self.sp_center_y.setDecimals(3); self.sp_center_y.setFixedWidth(grid_param_field_width)
-        self.sp_center_z = QDoubleSpinBox(); self.sp_center_z.setRange(-9999.0, 9999.0); self.sp_center_z.setDecimals(3); self.sp_center_z.setFixedWidth(grid_param_field_width)
-        self.sp_grid_x = QSpinBox(); self.sp_grid_x.setRange(1, 500); self.sp_grid_x.setFixedWidth(grid_param_field_width)
-        self.sp_grid_y = QSpinBox(); self.sp_grid_y.setRange(1, 500); self.sp_grid_y.setFixedWidth(grid_param_field_width)
-        self.sp_grid_z = QSpinBox(); self.sp_grid_z.setRange(1, 500); self.sp_grid_z.setFixedWidth(grid_param_field_width)
-        self.sp_spacing = QDoubleSpinBox(); self.sp_spacing.setRange(0.1, 20.0); self.sp_spacing.setDecimals(3); self.sp_spacing.setFixedWidth(target_field_width)
+        def add_option(method: str, title_key: str, body_layout) -> None:
+            check = QCheckBox()
+            self._tr(title_key, check.setText)
+            check.toggled.connect(lambda checked, m=method: self._sync_grid_methods(m, checked))
+            self._grid_method_group.addButton(check)
+            body = QWidget(); body.setLayout(body_layout)
+            body_layout.setContentsMargins(22, 0, 0, 6)
+            grid_layout.addWidget(check)
+            grid_layout.addWidget(body)
+            self._grid_options[method] = (check, body)
 
-        grid_params_grid = QGridLayout()
-        grid_params_grid.setHorizontalSpacing(18)
-        grid_params_grid.setVerticalSpacing(14)
-        grid_param_rows = [
-            ("s2_lbl_grid_center_x", self.sp_center_x, "s2_lbl_grid_x_size", self.sp_grid_x),
-            ("s2_lbl_grid_center_y", self.sp_center_y, "s2_lbl_grid_y_size", self.sp_grid_y),
-            ("s2_lbl_grid_center_z", self.sp_center_z, "s2_lbl_grid_z_size", self.sp_grid_z),
-        ]
-        for row_idx, (key_left, widget_left, key_right, widget_right) in enumerate(grid_param_rows):
-            label_left_widget = QLabel(); self._tr(key_left, label_left_widget.setText)
-            label_right_widget = QLabel(); self._tr(key_right, label_right_widget.setText)
-            grid_params_grid.addWidget(label_left_widget, row_idx, 0)
-            grid_params_grid.addWidget(widget_left, row_idx, 1)
-            grid_params_grid.addWidget(label_right_widget, row_idx, 2)
-            grid_params_grid.addWidget(widget_right, row_idx, 3)
-        grid_params_grid.setColumnStretch(4, 1)
-        grid_params_widget = QWidget()
-        grid_params_widget.setLayout(grid_params_grid)
-
-        lbl_prep_mode = QLabel(); self._tr("s2_lbl_prep_mode", lbl_prep_mode.setText)
-        target_form.addRow(lbl_prep_mode, self.cb_target_mode)
-        lbl_target_name = QLabel(); self._tr("s2_lbl_target_name", lbl_target_name.setText)
-        target_form.addRow(lbl_target_name, self.ed_target_name)
-        lbl_target_file = QLabel(); self._tr("s2_lbl_target_file", lbl_target_file.setText)
-        target_form.addRow(lbl_target_file, wrap_target)
-        lbl_protonation_ph = QLabel(); self._tr("s2_lbl_protonation_ph", lbl_protonation_ph.setText)
-        target_form.addRow(lbl_protonation_ph, self.sp_target_ph)
-        lbl_rigid_receptor = QLabel(); self._tr("s2_lbl_rigid_receptor", lbl_rigid_receptor.setText)
-        target_form.addRow(lbl_rigid_receptor, wrap_rigid)
-        lbl_flex_receptor = QLabel(); self._tr("s2_lbl_flex_receptor", lbl_flex_receptor.setText)
-        target_form.addRow(lbl_flex_receptor, wrap_flex)
-        lbl_existing_grid = QLabel(); self._tr("s2_lbl_existing_grid", lbl_existing_grid.setText)
-        target_form.addRow(lbl_existing_grid, wrap_grid)
-
+        # 1. Heuristic search (P2Rank): the pocket Rank to use, its Score, and the Detect button
+        self.sp_pocket_rank = QSpinBox(); self.sp_pocket_rank.setRange(1, 1); self.sp_pocket_rank.setFixedWidth(90)
+        self.sp_pocket_rank.valueChanged.connect(self._on_pocket_rank_changed)
+        self.ed_pocket_score = QLineEdit(); self.ed_pocket_score.setReadOnly(True); self.ed_pocket_score.setFixedWidth(150)
+        self._tr("s2_tooltip_pocket_rank", self.sp_pocket_rank.setToolTip)
+        self._tr("s2_tooltip_pocket_score", self.ed_pocket_score.setToolTip)
         btn_detect_pocket = QPushButton()
         self._tr("s2_btn_detect_pocket", btn_detect_pocket.setText)
         self._tr("s2_tooltip_detect_pocket", btn_detect_pocket.setToolTip)
-        btn_detect_pocket.setFixedWidth(target_button_width)
         btn_detect_pocket.clicked.connect(self.detect_pocket_p2rank)
-        target_form.addRow("", btn_detect_pocket)
+        heuristic_layout = QGridLayout()
+        heuristic_layout.setHorizontalSpacing(10)
+        heuristic_layout.setVerticalSpacing(6)
+        lbl_rank = QLabel(); self._tr("s2_lbl_rank", lbl_rank.setText)
+        lbl_score = QLabel(); self._tr("s2_lbl_score", lbl_score.setText)
+        heuristic_layout.addWidget(lbl_rank, 0, 0)
+        heuristic_layout.addWidget(self.sp_pocket_rank, 0, 1)
+        heuristic_layout.addWidget(lbl_score, 1, 0)
+        heuristic_layout.addWidget(self.ed_pocket_score, 1, 1)
+        heuristic_layout.addWidget(btn_detect_pocket, 1, 2)
+        heuristic_layout.setColumnStretch(3, 1)
+        add_option("heuristic", "s2_opt_heuristic", heuristic_layout)
 
-        # Redocking helpers: grid from a ligand already complexed in the PDB, and export of that
-        # ligand into the REDOCK group of the project's ligands (reference pose kept aside for the STEP 4 RMSD).
+        # 2. Existing grid file
+        self.ed_target_grid_file = QLineEdit()
+        self.ed_target_grid_file.setReadOnly(True)
+        existing_layout = QVBoxLayout()
+        existing_layout.setSpacing(6)
+        existing_layout.addWidget(self.ed_target_grid_file)
+        existing_layout.addWidget(gray_button("s2_btn_choose_grid", self.select_existing_grid), 0, Qt.AlignHCenter)
+        add_option("existing", "s2_opt_existing", existing_layout)
+
+        # 3. Selected ligand (any ligand file with 3D coordinates)
+        self.ed_grid_ligand_file = QLineEdit()
+        self.ed_grid_ligand_file.setReadOnly(True)
+        ligand_layout = QVBoxLayout()
+        ligand_layout.setSpacing(6)
+        ligand_layout.addWidget(self.ed_grid_ligand_file)
+        ligand_layout.addWidget(gray_button("s2_btn_select_ligand", self.select_ligand_for_grid), 0, Qt.AlignHCenter)
+        add_option("ligand", "s2_opt_ligand", ligand_layout)
+
+        # 4. Co-crystal ligand: picking one in the list runs the method
         self.cb_cocrystal_ligand = QComboBox()
-        self.cb_cocrystal_ligand.setFixedWidth(target_field_width)
         self._cocrystal_ligands: list = []
-        btn_find_ligands = QPushButton()
-        self._tr("s2_btn_find_ligands", btn_find_ligands.setText)
-        self._tr("s2_tooltip_find_ligands", btn_find_ligands.setToolTip)
-        btn_find_ligands.setFixedWidth(target_button_width)
-        btn_find_ligands.clicked.connect(self.find_cocrystal_ligands)
-        row_cocrystal = QHBoxLayout()
-        row_cocrystal.setContentsMargins(0, 0, 0, 0)
-        row_cocrystal.setSpacing(10)
-        row_cocrystal.addWidget(self.cb_cocrystal_ligand)
-        row_cocrystal.addWidget(btn_find_ligands)
-        row_cocrystal.addStretch(1)
-        wrap_cocrystal = QWidget(); wrap_cocrystal.setLayout(row_cocrystal)
-        lbl_cocrystal = QLabel(); self._tr("s2_lbl_cocrystal", lbl_cocrystal.setText)
-        target_form.addRow(lbl_cocrystal, wrap_cocrystal)
+        self.cb_cocrystal_ligand.activated.connect(self._apply_cocrystal_grid)
+        self._tr("s2_tooltip_cocrystal_combo", self.cb_cocrystal_ligand.setToolTip)
+        cocrystal_layout = QVBoxLayout()
+        cocrystal_layout.addWidget(self.cb_cocrystal_ligand)
+        add_option("cocrystal", "s2_opt_cocrystal", cocrystal_layout)
 
-        btn_grid_from_ligand = QPushButton()
-        self._tr("s2_btn_grid_from_ligand", btn_grid_from_ligand.setText)
-        self._tr("s2_tooltip_grid_from_ligand", btn_grid_from_ligand.setToolTip)
-        btn_grid_from_ligand.setFixedWidth(target_button_width)
-        btn_grid_from_ligand.clicked.connect(self.grid_from_cocrystal_ligand)
-        btn_export_redock = QPushButton()
-        self._tr("s2_btn_export_redock", btn_export_redock.setText)
-        self._tr("s2_tooltip_export_redock", btn_export_redock.setToolTip)
-        btn_export_redock.setFixedWidth(target_button_width)
-        btn_export_redock.clicked.connect(self.export_cocrystal_ligand_for_redocking)
-        row_redock_btns = QHBoxLayout()
-        row_redock_btns.setContentsMargins(0, 0, 0, 0)
-        row_redock_btns.setSpacing(10)
-        row_redock_btns.addWidget(btn_grid_from_ligand)
-        row_redock_btns.addWidget(btn_export_redock)
-        row_redock_btns.addStretch(1)
-        wrap_redock_btns = QWidget(); wrap_redock_btns.setLayout(row_redock_btns)
-        target_form.addRow("", wrap_redock_btns)
+        # 5. Generate manually, from the numbers typed in the boxes below
+        manual_layout = QVBoxLayout()
+        manual_layout.addWidget(gray_button("s2_btn_generate_grid", self.generate_manual_grid), 0, Qt.AlignHCenter)
+        add_option("manual", "s2_opt_manual", manual_layout)
 
-        target_form.addRow(grid_params_widget)
+        self.sp_center_x = QDoubleSpinBox(); self.sp_center_x.setRange(-9999.0, 9999.0); self.sp_center_x.setDecimals(3)
+        self.sp_center_y = QDoubleSpinBox(); self.sp_center_y.setRange(-9999.0, 9999.0); self.sp_center_y.setDecimals(3)
+        self.sp_center_z = QDoubleSpinBox(); self.sp_center_z.setRange(-9999.0, 9999.0); self.sp_center_z.setDecimals(3)
+        self.sp_grid_x = QSpinBox(); self.sp_grid_x.setRange(1, 500)
+        self.sp_grid_y = QSpinBox(); self.sp_grid_y.setRange(1, 500)
+        self.sp_grid_z = QSpinBox(); self.sp_grid_z.setRange(1, 500)
+        self.sp_spacing = QDoubleSpinBox(); self.sp_spacing.setRange(0.1, 20.0); self.sp_spacing.setDecimals(3)
+
+        # centre (X, Y, Z) and size (X, Y, Z) as two rows of three boxes, each with its caption above it
+        grid_params_grid = QGridLayout()
+        grid_params_grid.setHorizontalSpacing(10)
+        grid_params_grid.setVerticalSpacing(2)
+        grid_param_rows = [
+            (("s2_lbl_grid_center_x", self.sp_center_x), ("s2_lbl_grid_center_y", self.sp_center_y), ("s2_lbl_grid_center_z", self.sp_center_z)),
+            (("s2_lbl_grid_x_size", self.sp_grid_x), ("s2_lbl_grid_y_size", self.sp_grid_y), ("s2_lbl_grid_z_size", self.sp_grid_z)),
+        ]
+        for block, cells in enumerate(grid_param_rows):
+            for col, (label_key, spin) in enumerate(cells):
+                caption = QLabel(); self._tr(label_key, caption.setText)
+                grid_params_grid.addWidget(caption, block * 2, col)
+                grid_params_grid.addWidget(spin, block * 2 + 1, col)
+            grid_params_grid.setRowMinimumHeight(block * 2 + 2, 6)
+        grid_layout.addLayout(grid_params_grid)
         lbl_grid_spacing = QLabel(); self._tr("s2_lbl_grid_spacing", lbl_grid_spacing.setText)
-        target_form.addRow(lbl_grid_spacing, self.sp_spacing)
+        grid_layout.addWidget(lbl_grid_spacing)
+        grid_layout.addWidget(self.sp_spacing)
+        grid_layout.addStretch(1)
+
+        target_row = QHBoxLayout()
+        target_row.setSpacing(14)
+        for group in (target_box, grid_box):
+            group.setFixedWidth((targets_group_width - 14) // 2)       # exactly half of the 1000 px each
+            target_row.addWidget(group)
+        target_wrap = QWidget(); target_wrap.setLayout(target_row)
+        add_centered_group(target_wrap)
 
         btn_prepare = QPushButton()
         self._tr("s2_btn_prepare_target", btn_prepare.setText)
         btn_prepare.setFixedWidth(180)
         btn_prepare.clicked.connect(self.prepare_target)
-        target_form.addRow("", btn_prepare)
-        add_centered_group(target_box)
+        layout.addWidget(btn_prepare, alignment=Qt.AlignCenter)
+
+        self._pockets: list = []
+        self._grid_applied: set[str] = set()      # grid methods that have already filled the boxes
 
         manage_box = QGroupBox()
         self._tr("s2_grp_prepared_targets", manage_box.setTitle)
@@ -3379,14 +3564,17 @@ class MainWindow(QMainWindow):
         btn_refresh_targets = QPushButton()
         self._tr("s2_btn_refresh_targets", btn_refresh_targets.setText)
         btn_refresh_targets.setFixedWidth(170)
+        btn_refresh_targets.setStyleSheet(_SS_BTN_SECONDARY)
         btn_refresh_targets.clicked.connect(self._populate_prepared_targets)
         btn_open_target = QPushButton()
         self._tr("s2_btn_open_target", btn_open_target.setText)
         btn_open_target.setFixedWidth(170)
+        btn_open_target.setStyleSheet(_SS_BTN_SECONDARY)
         btn_open_target.clicked.connect(self._open_selected_target_folder)
         btn_remove_target = QPushButton()
         self._tr("s2_btn_remove_target", btn_remove_target.setText)
         btn_remove_target.setFixedWidth(170)
+        btn_remove_target.setStyleSheet(_SS_BTN_SECONDARY)
         btn_remove_target.clicked.connect(self._remove_selected_target)
         manage_row.addWidget(self.cb_prepared_targets)
         manage_row.addWidget(btn_refresh_targets)
@@ -3405,7 +3593,11 @@ class MainWindow(QMainWindow):
         self._tr("tab_step2", lambda txt, i=step3_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_targets_summary()
         self._populate_prepared_targets()
-        self._toggle_target_mode()
+        # preselected: 1. Rigid Docking and 1. Heuristic Search
+        self.chk_target_rigid.setChecked(True)
+        self._grid_options["heuristic"][0].setChecked(True)
+        self._sync_target_modes()
+        self._sync_grid_methods("heuristic", True)
 
     def _build_docking_tab(self) -> None:
         tab = QWidget()
@@ -3498,7 +3690,6 @@ class MainWindow(QMainWindow):
         self._tr("s3_btn_run_docking", btn_run.setText)
         btn_run.setFixedWidth(180)
         btn_run.clicked.connect(self.run_docking)
-        monitor_layout.addWidget(btn_run, alignment=Qt.AlignCenter)
 
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._refresh_docking_monitor)
@@ -3507,7 +3698,13 @@ class MainWindow(QMainWindow):
         params_row.setContentsMargins(0, 0, 0, 0)
         params_row.setSpacing(14)
         params_row.addWidget(settings_box, 1, Qt.AlignTop)
-        params_row.addWidget(monitor_group, 0, Qt.AlignTop)
+        # Run docking sits outside the monitor group, centred right below it
+        monitor_column = QVBoxLayout()
+        monitor_column.setSpacing(10)
+        monitor_column.addWidget(monitor_group)
+        monitor_column.addWidget(btn_run, 0, Qt.AlignHCenter)
+        monitor_column.addStretch(1)
+        params_row.addLayout(monitor_column, 0)
         params_wrap = QWidget()
         params_wrap.setLayout(params_row)
         add_centered_group(params_wrap)
@@ -3793,6 +3990,26 @@ class MainWindow(QMainWindow):
         counts = self._ligand_monitor_counts() if self.project.is_open else {}
         for row_idx, (_label_key, counter) in enumerate(self._LIGAND_MONITOR_ROWS):
             self.tbl_lig_monitor.item(row_idx, 1).setText(f"{counts[counter]:,}" if counter in counts else "-")
+        if counts:
+            self._write_ligand_monitor_csv(counts)
+
+    def _write_ligand_monitor_csv(self, counts: dict[str, int]) -> None:
+        """Keeps CONVERSION/ligand_monitor.csv equal to the Monitor table: same rows, in the same order,
+        written every time the table is refreshed (only when the numbers changed). The stage names are
+        always the English ones and the quantities plain integers, whatever the interface language."""
+        path = self.project.ligand_monitor_path
+        rows = [[i18n.t("s1_mon_col_type", "en"), i18n.t("s1_mon_col_count", "en")]]
+        rows += [[i18n.t(label_key, "en"), counts[counter]] for label_key, counter in self._LIGAND_MONITOR_ROWS]
+        if getattr(self, "_ligand_monitor_csv_last", None) == (path, rows) and os.path.isfile(path):
+            return
+        try:
+            temp_path = path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8", newline="") as handle:
+                csv.writer(handle).writerows(rows)
+            os.replace(temp_path, path)         # a reader never sees a half-written file
+            self._ligand_monitor_csv_last = (path, rows)
+        except OSError:
+            pass
 
     def _collect_ligand_settings_from_widgets(self) -> None:
         if hasattr(self, "sp_lig_file_size"):
@@ -3829,6 +4046,8 @@ class MainWindow(QMainWindow):
             self.ligand_settings.h_acceptor_max = self.sp_lig_ha.value()
         if hasattr(self, "sp_lig_tpsa"):
             self.ligand_settings.tpsa_max = self.sp_lig_tpsa.value()
+        if hasattr(self, "chk_lig_drug"):
+            self.ligand_settings.druggability_enabled = {key: check.isChecked() for key, check in self.chk_lig_drug.items()}
 
     def _apply_ligand_settings_to_widgets(self) -> None:
         if hasattr(self, "ed_ligands"):
@@ -3871,6 +4090,9 @@ class MainWindow(QMainWindow):
             self.sp_lig_ha.setValue(self.ligand_settings.h_acceptor_max)
         if hasattr(self, "sp_lig_tpsa"):
             self.sp_lig_tpsa.setValue(self.ligand_settings.tpsa_max)
+        if hasattr(self, "chk_lig_drug"):
+            for key, check in self.chk_lig_drug.items():
+                check.setChecked(self.ligand_settings.druggability_enabled.get(key, True))
 
     def _collect_result_settings_from_widgets(self) -> None:
         if hasattr(self, "sp_result_top_n"):
@@ -3971,22 +4193,19 @@ class MainWindow(QMainWindow):
         if file_path:
             editor.setText(file_path)
 
-    def _choose_grid_file(self, editor: QLineEdit, title: str) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            title,
-            self.base_dir,
-            "Grid files (*.txt);;All files (*)",
-        )
-        if file_path:
-            editor.setText(file_path)
+    def _target_mode(self) -> str:
+        """'rigid' or 'flexible': whichever of the two Target Parameters checkboxes is ticked."""
+        return next(mode for mode, (check, _widgets) in self._target_modes.items() if check.isChecked())
 
-    def _toggle_target_mode(self) -> None:
-        flexible_mode = hasattr(self, "cb_target_mode") and self.cb_target_mode.currentIndex() == 1
-        self.ed_target_file.setEnabled(not flexible_mode)
-        self.sp_target_ph.setEnabled(not flexible_mode)
-        self.ed_target_rigid_file.setEnabled(flexible_mode)
-        self.ed_target_flex_file.setEnabled(flexible_mode)
+    def _flexible_mode(self) -> bool:
+        return self.chk_target_flexible.isChecked()
+
+    def _sync_target_modes(self) -> None:
+        """Only the ticked mode keeps its fields enabled; both checkboxes stay clickable (ticking one unticks the other)."""
+        for check, widgets in self._target_modes.values():
+            for widget in widgets:
+                widget.setEnabled(check.isChecked())
+        self._on_target_structure_changed()
 
     def _populate_prepared_targets(self) -> None:
         if not hasattr(self, "cb_prepared_targets"):
@@ -4033,15 +4252,19 @@ class MainWindow(QMainWindow):
     def prepare_target(self) -> None:
         if not self._require_project():
             return
+        mode = self._target_mode()
+        method = self._checked_grid_method()
+        if method not in self._grid_applied:
+            QMessageBox.warning(self, APP_NAME, self._t("msg_grid_method_not_run", method=self._grid_options[method][0].text()))
+            return
         self._collect_settings_from_widgets()
-        flexible_mode = self.cb_target_mode.currentIndex() == 1 if hasattr(self, "cb_target_mode") else False
-        target_name_input = self.ed_target_name.text().strip() if hasattr(self, "ed_target_name") else ""
+        flexible_mode = mode == "flexible"
+        target_name_input = self.ed_target_name.text().strip()      # blank: named after the structure / rigid file
 
         try:
             if flexible_mode:
                 rigid_file = self.ed_target_rigid_file.text().strip()
                 flex_file = self.ed_target_flex_file.text().strip()
-                grid_file = self.ed_target_grid_file.text().strip()
                 if not rigid_file or not os.path.isfile(rigid_file):
                     QMessageBox.warning(self, APP_NAME, "Select a valid protein_rigid.pdbqt file.")
                     return
@@ -4054,10 +4277,7 @@ class MainWindow(QMainWindow):
                 os.makedirs(target_dir, exist_ok=True)
                 self._copy_if_different(rigid_file, os.path.join(target_dir, "protein_rigid.pdbqt"))
                 self._copy_if_different(flex_file, os.path.join(target_dir, "protein_flex.pdbqt"))
-                if grid_file and os.path.isfile(grid_file):
-                    self._copy_if_different(grid_file, os.path.join(target_dir, "grid.txt"))
-                else:
-                    self._write_grid_file(os.path.join(target_dir, "grid.txt"), target_base)
+                self._write_grid_file(os.path.join(target_dir, "grid.txt"), target_base)
                 QMessageBox.information(self, APP_NAME, f"Flexible target registered in {target_dir}.")
             else:
                 target_file = self.ed_target_file.text().strip()
@@ -4072,12 +4292,7 @@ class MainWindow(QMainWindow):
                 copied_target = os.path.join(target_dir, os.path.basename(target_file))
                 self._copy_if_different(target_file, copied_target)
                 protein_out = os.path.join(target_dir, "protein.pdbqt")
-                grid_path = os.path.join(target_dir, "grid.txt")
-                grid_file = self.ed_target_grid_file.text().strip()
-                if grid_file and os.path.isfile(grid_file):
-                    self._copy_if_different(grid_file, grid_path)
-                else:
-                    self._write_grid_file(grid_path, target_base)
+                self._write_grid_file(os.path.join(target_dir, "grid.txt"), target_base)
 
                 try:
                     prep_result = prepare_receptor_with_protonation(
@@ -4105,11 +4320,57 @@ class MainWindow(QMainWindow):
         self._populate_prepared_targets()
         self._refresh_result_selectors()
 
+    # ------------------------------------------------------------------ grid methods (STEP 2) ------------------------------------------------------------------
+    def _checked_grid_method(self) -> str:
+        """The grid method whose checkbox is ticked (one always is)."""
+        return next(method for method, (check, _body) in self._grid_options.items() if check.isChecked())
+
+    def _sync_grid_methods(self, method: str, checked: bool) -> None:
+        """Only the ticked grid method keeps its fields enabled; all the checkboxes stay clickable."""
+        for check, body in self._grid_options.values():
+            body.setEnabled(check.isChecked())
+        if checked and method == "cocrystal" and self.cb_cocrystal_ligand.currentIndex() >= 0:
+            self._apply_cocrystal_grid()
+
+    def _set_grid_boxes(self, center: Optional[tuple] = None, size: Optional[tuple] = None, spacing: Optional[float] = None) -> None:
+        """Show a method's result in the Grid center / size / spacing boxes."""
+        if center is not None:
+            self.sp_center_x.setValue(center[0]); self.sp_center_y.setValue(center[1]); self.sp_center_z.setValue(center[2])
+        if size is not None:
+            self.sp_grid_x.setValue(int(size[0])); self.sp_grid_y.setValue(int(size[1])); self.sp_grid_z.setValue(int(size[2]))
+        if spacing is not None:
+            self.sp_spacing.setValue(spacing)
+
+    def _target_structure_path(self) -> str:
+        """Structure the grid methods read: the Target file, or the rigid receptor in flexible mode."""
+        return (self.ed_target_rigid_file if self._flexible_mode() else self.ed_target_file).text().strip()
+
+    def _on_target_structure_changed(self) -> None:
+        """A new target structure: what was derived from the old one (P2Rank pockets, the co-crystal
+        ligands) no longer applies."""
+        if not hasattr(self, "_grid_applied"):
+            return
+        self._pockets = []
+        self._grid_applied -= {"heuristic", "cocrystal"}
+        self.sp_pocket_rank.setRange(1, 1)
+        self.ed_pocket_score.clear()
+        self._cocrystal_ligands = []
+        path = self.ed_target_file.text().strip()
+        if not self._flexible_mode() and os.path.isfile(path) and os.path.splitext(path)[1].lower() in (".pdb", ".ent"):
+            try:
+                self._cocrystal_ligands = module_cocrystal.find_cocrystal_ligands(path)
+            except Exception:
+                self._cocrystal_ligands = []
+        for combo in (self.cb_cocrystal_ligand, self.cb_redock_ligand):
+            combo.clear()
+            combo.addItems([ligand.label for ligand in self._cocrystal_ligands])
+
+    # 1. Heuristic search
     def detect_pocket_p2rank(self) -> None:
-        """Run a P2Rank heuristic pocket search on the currently selected target structure
-        and fill Grid center X/Y/Z with the top-ranked pocket's coordinates."""
-        flexible_mode = self.cb_target_mode.currentIndex() == 1 if hasattr(self, "cb_target_mode") else False
-        structure_path = self.ed_target_rigid_file.text().strip() if flexible_mode else self.ed_target_file.text().strip()
+        """Run a P2Rank heuristic pocket search on the target structure; the Rank box then chooses which
+        of the pockets found (best first) gives the grid center."""
+        flexible_mode = self._flexible_mode()
+        structure_path = self._target_structure_path()
         if not structure_path or not os.path.isfile(structure_path):
             QMessageBox.warning(
                 self,
@@ -4127,88 +4388,113 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
-        best = pockets[0]
-        center_x, center_y, center_z = best.center
-        self.sp_center_x.setValue(center_x)
-        self.sp_center_y.setValue(center_y)
-        self.sp_center_z.setValue(center_z)
-
-        probability_text = f", probability {best.probability:.2f}" if best.probability is not None else ""
+        self._pockets = pockets
+        self.sp_pocket_rank.blockSignals(True)
+        self.sp_pocket_rank.setRange(1, len(pockets))
+        self.sp_pocket_rank.setValue(1)
+        self.sp_pocket_rank.blockSignals(False)
+        self._apply_selected_pocket()
         QMessageBox.information(
             self,
             APP_NAME,
             f"P2Rank found {len(pockets)} pocket(s) in {os.path.basename(structure_path)}.\n\n"
-            f"Using the top-ranked pocket '{best.name}' "
-            f"(score {best.score:.2f}{probability_text}, {best.n_residues} residue(s)):\n"
-            f"Grid center = ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})",
+            "Rank 1 is in use; change Rank to use another pocket.",
         )
 
-    def _cocrystal_source_path(self) -> str:
-        path = self.ed_target_file.text().strip()
-        if not path or not os.path.isfile(path):
-            QMessageBox.warning(
-                self, APP_NAME, "Select a valid PDB target file first (Rigid target mode) - the co-crystal ligand is read from it."
-            )
-            return ""
-        return path
+    def _on_pocket_rank_changed(self) -> None:
+        if self._pockets:
+            self._apply_selected_pocket()
 
-    def find_cocrystal_ligands(self) -> None:
-        """List the ligands already complexed in the selected PDB target (not water/ions/modified residues)."""
-        path = self._cocrystal_source_path()
-        if not path:
+    def _apply_selected_pocket(self) -> None:
+        pocket = self._pockets[self.sp_pocket_rank.value() - 1]
+        self._set_grid_boxes(center=pocket.center)
+        probability = f" (p={pocket.probability:.2f})" if pocket.probability is not None else ""
+        self.ed_pocket_score.setText(f"{pocket.score:.2f}{probability}")
+        self._grid_applied.add("heuristic")
+
+    # 2. Existing grid file
+    def select_existing_grid(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select grid.txt", self.base_dir, "Grid files (*.txt);;All files (*)")
+        if not file_path:
             return
         try:
-            ligands = module_cocrystal.find_cocrystal_ligands(path)
+            grid = _parse_grid_file(file_path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not read {os.path.basename(file_path)}:\n{exc}")
+            return
+        if not {"center_x", "size_x"} <= set(grid):
+            QMessageBox.warning(self, APP_NAME, f"{os.path.basename(file_path)} has no 'center' and 'npts' lines - it is not a grid.txt.")
+            return
+        self.ed_target_grid_file.setText(file_path)
+        self._set_grid_boxes(
+            center=(grid["center_x"], grid["center_y"], grid["center_z"]),
+            size=(grid["size_x"], grid["size_y"], grid["size_z"]),
+            spacing=grid.get("spacing"),
+        )
+        self._grid_applied.add("existing")
+
+    # 3. Selected ligand
+    def select_ligand_for_grid(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Ligand", self.base_dir, "Ligand files (*.pdb *.pdbqt *.sdf *.mol *.mol2 *.ent);;All files (*)"
+        )
+        if not file_path:
+            return
+        try:
+            ligand = module_cocrystal.ligand_from_file(file_path)
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
-        self._cocrystal_ligands = ligands
-        self.cb_cocrystal_ligand.clear()
-        for ligand in ligands:
-            self.cb_cocrystal_ligand.addItem(ligand.label)
-        if not ligands:
-            QMessageBox.information(
-                self, APP_NAME, f"No co-crystallized ligand (HETATM other than water, ions or modified residues) was found in {os.path.basename(path)}."
-            )
+        self.ed_grid_ligand_file.setText(file_path)
+        self._grid_from_ligand(ligand, os.path.basename(file_path))
+        self._grid_applied.add("ligand")
 
-    def _selected_cocrystal_ligand(self) -> Optional[Any]:
-        index = self.cb_cocrystal_ligand.currentIndex()
-        if index < 0 or index >= len(self._cocrystal_ligands):
-            QMessageBox.warning(self, APP_NAME, "Click 'Find co-crystal ligands' and select a ligand first.")
-            return None
-        return self._cocrystal_ligands[index]
-
-    def grid_from_cocrystal_ligand(self) -> None:
-        """Center the grid on the selected co-crystal ligand and size the box to enclose it (+6 A per side, min 20 A)."""
-        ligand = self._selected_cocrystal_ligand()
-        if ligand is None:
-            return
-        (center_x, center_y, center_z), (size_x, size_y, size_z) = module_cocrystal.suggest_grid(ligand)
-        self.sp_center_x.setValue(center_x)
-        self.sp_center_y.setValue(center_y)
-        self.sp_center_z.setValue(center_z)
-        self.sp_grid_x.setValue(size_x)
-        self.sp_grid_y.setValue(size_y)
-        self.sp_grid_z.setValue(size_z)
+    def _grid_from_ligand(self, ligand: Any, description: str) -> None:
+        """Center the grid on `ligand` and size the box to enclose it (+6 A per side, min 20 A)."""
+        center, size = module_cocrystal.suggest_grid(ligand)
+        self._set_grid_boxes(center=center, size=size)
         QMessageBox.information(
             self,
             APP_NAME,
-            f"Grid set from {ligand.label}:\n"
-            f"center = ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})\n"
-            f"size = {size_x} x {size_y} x {size_z} A (ligand extent + 6 A on each side, minimum 20 A).",
+            f"Grid set from {description}:\n"
+            f"center = ({center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f})\n"
+            f"size = {size[0]} x {size[1]} x {size[2]} A (ligand extent + 6 A on each side, minimum 20 A).",
+        )
+
+    # 4. Co-crystal ligand
+    def _apply_cocrystal_grid(self) -> None:
+        index = self.cb_cocrystal_ligand.currentIndex()
+        if 0 <= index < len(self._cocrystal_ligands):
+            ligand = self._cocrystal_ligands[index]
+            self._grid_from_ligand(ligand, ligand.label)
+            self._grid_applied.add("cocrystal")
+
+    # 5. Generate manually
+    def generate_manual_grid(self) -> None:
+        sizes = (self.sp_grid_x.value(), self.sp_grid_y.value(), self.sp_grid_z.value())
+        if min(sizes) <= 0 or self.sp_spacing.value() <= 0:
+            QMessageBox.warning(self, APP_NAME, "Grid size and Grid spacing must be greater than zero.")
+            return
+        self._grid_applied.add("manual")
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"Grid defined from the boxes:\n"
+            f"center = ({self.sp_center_x.value():.3f}, {self.sp_center_y.value():.3f}, {self.sp_center_z.value():.3f})\n"
+            f"size = {sizes[0]} x {sizes[1]} x {sizes[2]} A, spacing = {self.sp_spacing.value():g}.",
         )
 
     def export_cocrystal_ligand_for_redocking(self) -> None:
-        """Send the selected co-crystal ligand to the REDOCK group of the project's ligands (prepared by STEP 1)
-        and keep its crystal pose as reference."""
+        """Send the ligand picked in the redocking list to the REDOCKING group of the project's ligands (prepared
+        by STEP 1) and keep its crystal pose as reference."""
         if not self._require_project():
             return
-        ligand = self._selected_cocrystal_ligand()
-        if ligand is None:
+        index = self.cb_redock_ligand.currentIndex()
+        if index < 0 or index >= len(self._cocrystal_ligands):
+            QMessageBox.warning(self, APP_NAME, self._t("msg_no_cocrystal_ligand"))
             return
-        path = self._cocrystal_source_path()
-        if not path:
-            return
+        ligand = self._cocrystal_ligands[index]
+        path = self.ed_target_file.text().strip()
         target_name_input = self.ed_target_name.text().strip()
         target_base = self._safe_target_name(target_name_input or Path(path).stem)
         ligand_name = self._safe_target_name(f"{target_base}_{ligand.resname}_{ligand.chain}{ligand.resnum}")
@@ -4249,8 +4535,8 @@ class MainWindow(QMainWindow):
             f"Ligand file: {info['sdf_path']}\n"
             f"Crystal pose (reference): {info['reference_path']}\n"
             f"Bond orders from: {info['method']}\nSMILES: {info['smiles']}\n\n"
-            f"Next: prepare the target named '{target_base}' (Prepare target), convert the REDOCK group in STEP 1, "
-            "run the docking and use 'Redocking RMSD' in STEP 4. Note the REDOCK group is docked against every target of the project.",
+            f"Next: prepare the target named '{target_base}' (Prepare target), convert the REDOCKING group in STEP 1, "
+            "run the docking and use 'Redocking RMSD' in STEP 4. Note the REDOCKING group is docked against every target of the project.",
         )
 
     def _copy_if_different(self, src: str, dst: str) -> None:
@@ -4388,23 +4674,25 @@ class MainWindow(QMainWindow):
         self._collect_result_settings_from_widgets()
 
     def _collect_target_settings_from_widgets(self) -> None:
-        if hasattr(self, "cb_target_mode"):
-            self.target_settings.mode_index = self.cb_target_mode.currentIndex()
+        if hasattr(self, "chk_target_rigid"):
+            self.target_settings.mode_index = 1 if self._flexible_mode() else 0
             self.target_settings.target_name = self.ed_target_name.text().strip()
             self.target_settings.target_file = self.ed_target_file.text().strip()
             self.target_settings.rigid_file = self.ed_target_rigid_file.text().strip()
             self.target_settings.flex_file = self.ed_target_flex_file.text().strip()
             self.target_settings.grid_file = self.ed_target_grid_file.text().strip()
+            self.target_settings.grid_ligand_file = self.ed_grid_ligand_file.text().strip()
 
     def _apply_target_settings_to_widgets(self) -> None:
-        if hasattr(self, "cb_target_mode"):
-            self.cb_target_mode.setCurrentIndex(max(0, min(self.target_settings.mode_index, self.cb_target_mode.count() - 1)))
+        if hasattr(self, "chk_target_rigid"):
+            (self.chk_target_flexible if self.target_settings.mode_index == 1 else self.chk_target_rigid).setChecked(True)
             self.ed_target_name.setText(self.target_settings.target_name)
             self.ed_target_file.setText(self.target_settings.target_file)
             self.ed_target_rigid_file.setText(self.target_settings.rigid_file)
             self.ed_target_flex_file.setText(self.target_settings.flex_file)
             self.ed_target_grid_file.setText(self.target_settings.grid_file)
-            self._toggle_target_mode()
+            self.ed_grid_ligand_file.setText(self.target_settings.grid_ligand_file)
+            self._sync_target_modes()
 
     def _apply_settings_to_widgets(self) -> None:
         if hasattr(self, "cb_scoring"):
@@ -4761,7 +5049,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, APP_NAME, f"Chart saved to {file_path}.")
 
     def compute_redocking_rmsd(self) -> None:
-        """Compare every docked REDOCK ligand against its crystal pose (heavy-atom, symmetry-aware RMSD)."""
+        """Compare every docked REDOCKING ligand against its crystal pose (heavy-atom, symmetry-aware RMSD)."""
         result_name = self.project.name
         if not result_name:
             QMessageBox.warning(self, APP_NAME, self._t("msg_no_project"))
@@ -4819,7 +5107,7 @@ class MainWindow(QMainWindow):
                 self,
                 APP_NAME,
                 "No redocking results were found in this project. Export a co-crystal ligand with 'Export ligand for redocking' "
-                "in STEP 2, prepare the target with the same name, convert the REDOCK group in STEP 1 and run the docking first."
+                "in STEP 2, prepare the target with the same name, convert the REDOCKING group in STEP 1 and run the docking first."
                 + detail,
             )
             return

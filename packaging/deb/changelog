@@ -36,7 +36,20 @@ codoc (2.0.0-1) unstable; urgency=low
     - STEP 1 ganhou o grupo Monitor, à direita de Ligand preparation settings:
       tabela com a quantidade de ligantes em cada etapa (Groups, Multimodels,
       Splitted, Empty, Converted, Rejected, Recovered), somada sobre todas as
-      subpastas e atualizada enquanto uma ação roda e ao terminar.
+      subpastas e atualizada enquanto uma ação roda e ao terminar. A mesma
+      tabela é gravada em CONVERSION/ligand_monitor.csv do projeto.
+    - No Druggability Filter (STEP 1) cada um dos oito limites tem um checkbox
+      que o liga ou desliga no Apply druggability filter (gravado em
+      ligand_settings.json).
+    - STEP 2: o grupo de preparo do alvo foi dividido em Target Parameters e
+      Grid Parameters (lado a lado). O grid tem cinco métodos numerados, com
+      checkbox exclusivo (busca heurística P2Rank com Rank/Score, arquivo
+      grid.txt, ligante selecionado, ligante cocristalizado e manual); cada
+      um preenche centro/tamanho/espaçamento e o Prepare target grava
+      grid.txt com protein.pdbqt. A exportação para redocking passou a ficar
+      em Target Parameters e grava em CONVERSION/LIGANDS/REDOCKING. O modo de
+      preparo (Preparation mode) virou dois checkboxes exclusivos, 1. Rigid
+      Docking e 2. Flexible Docking.
     - Manuais em português e inglês atualizados.
 
  -- Moisés Maia <moimaian@gmail.com>  Tue, 17 Nov 2026 13:00:00 -0300

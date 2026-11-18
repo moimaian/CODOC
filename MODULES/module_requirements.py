@@ -53,6 +53,7 @@ CODOC_PYTHON_DEFAULTS = {
     "numpy": "numpy<2",
     "rdkit-pypi": "rdkit-pypi==2022.9.5",
     "pdb2pqr": "pdb2pqr>=3.6",
+    "propka": "propka>=3.5,<4.0",
     "scipy": "scipy>=1.10,<1.14",
     "gemmi": "gemmi>=0.6,<1.0",
     "meeko": "meeko>=0.5,<0.8",

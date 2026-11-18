@@ -4,7 +4,7 @@
 Three things a redocking study needs, all independent of PyQt:
   1. find the ligands already complexed in a PDB target (HETATM groups that are not water, ions
      or modified amino acids) and derive a docking grid (center + box size) from one of them;
-  2. export that ligand into the project's ligands folder (CONVERSION/LIGANDS, group "REDOCK") so
+  2. export that ligand into the project's ligands folder (CONVERSION/LIGANDS, group "REDOCKING") so
      it goes through the normal STEP 1 preparation, keeping the crystallographic pose aside, in
      the project's REDOCK_REFERENCE folder, as the reference;
   3. after docking, compare each docked pose against the reference pose (symmetry-aware,
@@ -41,7 +41,7 @@ except Exception:  # pragma: no cover
     Chem = None
     AllChem = None
 
-REDOCK_GROUP = "REDOCK"
+REDOCK_GROUP = "REDOCKING"
 RCSB_CHEMCOMP_URL = "https://data.rcsb.org/rest/v1/core/chemcomp/{code}"
 
 _WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "TIP", "TIP3", "SOL"}
@@ -180,6 +180,48 @@ def suggest_grid(
     return ligand.center, sizes  # type: ignore[return-value]
 
 
+def ligand_from_file(path: str) -> CocrystalLigand:
+    """Read the atoms of a ligand structure file (.pdb/.ent/.pdbqt, or .sdf/.mol/.mol2 with 3D coordinates)
+    so a docking grid can be derived from it with suggest_grid(). Only the first model is read."""
+    if not os.path.isfile(path):
+        raise CocrystalError(f"Ligand file not found: {path}")
+    suffix = os.path.splitext(path)[1].lower()
+    ligand = CocrystalLigand("LIG", "", 1, "")
+    if suffix in (".pdb", ".ent", ".pdbqt"):
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            for raw in handle:
+                if raw.startswith("ENDMDL"):
+                    break
+                if not raw.startswith(("ATOM", "HETATM")) or len(raw) < 54:
+                    continue
+                try:
+                    xyz = (float(raw[30:38]), float(raw[38:46]), float(raw[46:54]))
+                except ValueError:
+                    continue
+                name = raw[12:16].strip()
+                element = _pdbqt_element(raw[77:].strip(), name) if suffix == ".pdbqt" else _element_from_pdb_line(raw.rstrip("\n"))
+                ligand.atoms.append((name, element, xyz, raw.rstrip("\n")))
+    elif suffix in (".sdf", ".mol", ".mol2"):
+        if Chem is None:
+            raise CocrystalError("RDKit is required to read this ligand file.")
+        if suffix == ".sdf":
+            mol = next((m for m in Chem.SDMolSupplier(path, removeHs=False, sanitize=False) if m is not None), None)
+        elif suffix == ".mol":
+            mol = Chem.MolFromMolFile(path, removeHs=False, sanitize=False)
+        else:
+            mol = Chem.MolFromMol2File(path, removeHs=False, sanitize=False)
+        if mol is not None and mol.GetNumConformers():
+            conformer = mol.GetConformer()
+            for atom in mol.GetAtoms():
+                position = conformer.GetAtomPosition(atom.GetIdx())
+                ligand.atoms.append((atom.GetSymbol(), atom.GetSymbol(), (position.x, position.y, position.z), ""))
+    else:
+        raise CocrystalError(f"Unsupported ligand file '{os.path.basename(path)}' (use .pdb, .pdbqt, .sdf, .mol or .mol2).")
+    if ligand.n_heavy == 0:
+        raise CocrystalError(f"No atoms with 3D coordinates were found in {os.path.basename(path)}.")
+    return ligand
+
+
 # --------------------------------------------------------------------------------------
 # Export for redocking
 # --------------------------------------------------------------------------------------
@@ -281,7 +323,7 @@ def export_ligand_for_redocking(
     reference_dir: str,
     template_smiles: Optional[str] = None,
 ) -> dict[str, str]:
-    """Write the ligand as <ligands_dir>/REDOCK/<ligand_name>.sdf (picked up by STEP 1) and keep the
+    """Write the ligand as <ligands_dir>/REDOCKING/<ligand_name>.sdf (picked up by STEP 1) and keep the
     crystallographic pose as <reference_dir>/<ligand_name>.pdb (+ .json naming the target it belongs
     to), for the STEP 4 redocking RMSD. <reference_dir> is the project's REDOCK_REFERENCE folder,
     outside TARGETS/ on purpose: a TARGETS subfolder without grid.txt makes the docking run abort."""

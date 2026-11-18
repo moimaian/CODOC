@@ -22,6 +22,7 @@ Cada projeto é uma pasta  PROJECTS/<AAAA-MM-DD_HH-MM>_<nome>/  na raiz do CODOC
         LIGANDS/           pasta-base da conversão: arquivos após o split e, no fim, os .pdbqt
         CONVERSION_FAILURES/, EMPTY_LIGANDS/, NO_DRUGGABILITY/, DATAFRAMES/, MACROCYCLES/ ...
         ligand_settings.json     parâmetros da ETAPA 1
+        ligand_monitor.csv       tabela do grupo Monitor da ETAPA 1 (ligantes em cada fase)
     TARGETS/               alvos preparados (uma subpasta por alvo)
         target_settings.json     parâmetros da ETAPA 2
     DOCKING/               resultados do docking (<alvo>/<grupo de ligantes>/<ligante>/)
@@ -55,6 +56,7 @@ DOCKING_DIRNAME = "DOCKING"
 REFERENCE_DIRNAME = "REDOCK_REFERENCE"
 
 LIGAND_SETTINGS_FILE = "ligand_settings.json"
+LIGAND_MONITOR_FILE = "ligand_monitor.csv"
 TARGET_SETTINGS_FILE = "target_settings.json"
 DOCKING_SETTINGS_FILE = "docking_settings.json"
 RESULTS_SETTINGS_FILE = "results_settings.json"
@@ -181,6 +183,10 @@ class ProjectManager(QObject):
     @property
     def ligand_settings_path(self) -> str:
         return self._sub(CONVERSION_DIRNAME, LIGAND_SETTINGS_FILE)
+
+    @property
+    def ligand_monitor_path(self) -> str:
+        return self._sub(CONVERSION_DIRNAME, LIGAND_MONITOR_FILE)
 
     @property
     def target_settings_path(self) -> str:

@@ -72,7 +72,7 @@ Open the window with the "Install Requirements" button of the HOME tab (or Help 
 check the components and click "Install Selected":
 
   - Python libraries: PyQt5, pandas, matplotlib, numpy, scipy, psutil, gemmi, RDKit, Meeko, Dimorphite-DL,
-    PDB2PQR (PROPKA), python-docx;
+    PDB2PQR, PROPKA, python-docx;
   - Open Babel 3.x (apt);
   - AutoDock Vina 1.2.5 and vina_split (downloaded to the BIN folder);
   - Boost 1.84 and Vina-GPU 2.1 custom fork (built from the archives of the BIN folder; if they are missing
@@ -114,7 +114,7 @@ the last project used is shown, disabled, in "Previous project". Everything of a
                        the end, the converted .pdbqt files (one subfolder per file/folder imported)
     CONVERSION_FAILURES, NO_DRUGGABILITY, EMPTY_LIGANDS, MACROCYCLES, NOT_RECOGNIZED_LIGANDS, DATAFRAMES,
     actions.log, databank_formats.json
-    ligand_settings.json
+    ligand_settings.json, ligand_monitor.csv (table of the STEP 1 Monitor, kept up to date)
   TARGETS/           STEP 2
     <target>/          protein.pdbqt (or protein_rigid.pdbqt and protein_flex.pdbqt), grid.txt, a copy of the
                        source file and the protonation log
