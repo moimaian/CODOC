@@ -28,17 +28,20 @@ import importlib
 import importlib.metadata
 import json
 import multiprocessing
+import queue
 import os
 import platform
 import re
 import shutil
 import subprocess
+import threading
+import time
 import sys
 import tempfile
 import webbrowser
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -127,6 +130,8 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QLineEdit,
     QMainWindow,
     QMessageBox,
@@ -156,7 +161,14 @@ from MODULES.module_target_prepare import (
     prepare_receptor_with_protonation,
     summarize_pka_table,
 )
-from MODULES.module_report import generate_final_report as _generate_final_report_docx, load_job_settings
+from MODULES.module_report import (
+    GAP_COLUMN,
+    INTER_COLUMN,
+    LE_COLUMN,
+    apply_quality_filters,
+    generate_final_report as _generate_final_report_docx,
+    load_job_settings,
+)
 from MODULES.splash_screen import SplashScreen
 from MODULES import i18n
 from MODULES import module_cocrystal
@@ -375,6 +387,17 @@ QCheckBox::indicator:checked {
     background: #29B6D8;
     border-color: #29B6D8;
 }
+QListView::item { padding: 2px 0; }
+QListView::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid #2A4A6B;
+    border-radius: 3px;
+    background: #1C3249;
+}
+QListView::indicator:checked {
+    background: #29B6D8;
+    border-color: #29B6D8;
+}
 QCheckBox::indicator:disabled {
     background: #17222E;
     border-color: #22374A;
@@ -414,6 +437,20 @@ QPushButton:disabled {
 }
 """
 
+_SS_BTN_CANCEL = """
+QPushButton {
+    background: #4A2A2E;
+    color: #F57C6F;
+    font-weight: bold;
+    border: 1px solid #F57C6F;
+    border-radius: 5px;
+    padding: 6px 16px;
+}
+QPushButton:hover { background: #F57C6F; color: #0D1B2A; }
+QPushButton:pressed { background: #C0615A; color: #FFF; }
+QPushButton:disabled { background: #2A2024; color: #7A5551; border-color: #5A3A38; }
+"""
+
 _SS_BTN_SECONDARY = """
 QPushButton {
     background: #243746;
@@ -436,7 +473,7 @@ class DockingSettings:
     docking_type: str = "Rigid"
     processing_type: str = "CPU"
     opencl_platform_id: int = -1
-    opencl_device_id: int = -1
+    opencl_device_ids: list[int] = field(default_factory=list)      # the GPUs the docking is spread over; empty = the best one
     split_results: bool = False
     cpu_threads: int = max(1, os.cpu_count() or 1)
     exhaustiveness: int = max(1, os.cpu_count() or 1)
@@ -502,8 +539,17 @@ class TargetSettings:
 
 @dataclass
 class ResultViewSettings:
+    # every filter of Result filters has a flag: it only applies while the flag is on
+    top_enabled: bool = True
     top_results: int = 20
+    rmsd_enabled: bool = True
     rmsd_limit: float = 2.0
+    le_enabled: bool = False
+    le_min: float = 0.3           # ligand efficiency, kcal/mol per heavy atom
+    gap_enabled: bool = False
+    gap_min: float = 0.5          # kcal/mol between pose 1 and pose 2
+    inter_enabled: bool = False
+    inter_max: float = -6.0       # kcal/mol (more negative = stronger interaction)
 
 
 def _known_dataclass_kwargs(dataclass_type: type, data: dict[str, Any]) -> dict[str, Any]:
@@ -515,37 +561,98 @@ def _known_dataclass_kwargs(dataclass_type: type, data: dict[str, Any]) -> dict[
     return {key: value for key, value in data.items() if key in valid_names}
 
 
-def _parse_vina_pose_data(output_file: str) -> tuple[str, str, str]:
-    """Read a multi-model Vina PDBQT and return (best energy, mean RMSD across all poses, SMILES).
+class OperationCancelled(Exception):
+    """Raised inside a worker when the user clicked Cancel; the worker ends and reports it as a cancel, not an error."""
 
-    Each MODEL's "REMARK VINA RESULT:" line reports that pose's RMSD lower bound
-    relative to pose 1 (the reference pose, whose own RMSD is always 0.000), so the
-    mean must be computed across every pose in the file rather than reading pose 1 alone.
-    The ligand's SMILES is repeated as a "REMARK SMILES" line on every pose, so the
-    first occurrence found is used.
+
+def _is_complete_vina_output(path: str) -> bool:
+    """True when `path` is a whole Vina/Vina-GPU output PDBQT: it has results and its last line is ENDMDL. A file cut
+    short (the process was killed, or the power went out, while it was being written) is not complete."""
+    try:
+        size = os.path.getsize(path)
+        if size == 0:
+            return False
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - 64))
+            tail = handle.read().decode("utf-8", errors="ignore").rstrip()
+            handle.seek(0)
+            head = handle.read(4096).decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    return tail.endswith("ENDMDL") and "REMARK VINA RESULT" in head
+
+
+def _parse_vina_result_metrics(output_file: str) -> dict[str, str]:
+    """Read a multi-model Vina PDBQT and return the values CODOC keeps for the ligand (all as text, "" when
+    the file does not hold them):
+
+    energy   affinity of the best pose (the first MODEL), kcal/mol
+    rmsd     mean of the "rmsd l.b." of every pose (pose 1 is always 0.000, so every pose counts)
+    smiles   the ligand's SMILES, repeated as a "REMARK SMILES" line on every pose (the first one is used)
+    inter    "REMARK INTER:" of the best pose - the interaction with the receptor, without the ligand's
+             own strain (Vina writes it; Vina-GPU does not)
+    gap      affinity of pose 2 minus affinity of pose 1: how far the runner-up is from the best pose
+    le       ligand efficiency, -energy / heavy atoms of the best pose (kcal/mol per heavy atom)
     """
-    energy = ""
-    smiles = ""
+    metrics = {"energy": "", "rmsd": "", "smiles": "", "inter": "", "gap": "", "le": ""}
+    energies: list[float] = []
     rmsd_values: list[float] = []
+    heavy_atoms = 0
+    in_first_model = True
     if os.path.isfile(output_file):
         with open(output_file, "r", encoding="utf-8", errors="ignore") as handle:
             for line in handle:
-                if not smiles and line.startswith("REMARK SMILES"):
-                    smiles = line.split("REMARK SMILES", 1)[1].strip()
-                elif "REMARK VINA RESULT:" in line:
+                if line.startswith("REMARK VINA RESULT:"):
                     parts = line.strip().split()
                     if len(parts) >= 5:
-                        if not energy:
-                            energy = parts[3]
                         try:
+                            energies.append(float(parts[3]))
                             rmsd_values.append(float(parts[4]))
                         except ValueError:
-                            pass
-    rmsd_mean = f"{sum(rmsd_values) / len(rmsd_values):.3f}" if rmsd_values else ""
-    return energy, rmsd_mean, smiles
+                            continue
+                        if not metrics["energy"]:
+                            metrics["energy"] = parts[3]      # as Vina wrote it
+                elif not metrics["smiles"] and line.startswith("REMARK SMILES") and not line.startswith("REMARK SMILES IDX"):
+                    metrics["smiles"] = line.split("REMARK SMILES", 1)[1].strip()
+                elif line.startswith("REMARK INTER:") and not metrics["inter"]:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        metrics["inter"] = parts[2]
+                elif line.startswith("ENDMDL"):
+                    in_first_model = False
+                elif in_first_model and line.startswith(("ATOM", "HETATM")):
+                    atom_type = line[77:].split()[0] if len(line) > 77 else line.split()[-1]
+                    if atom_type not in ("H", "HD", "HS"):
+                        heavy_atoms += 1
+    if energies:
+        if heavy_atoms:
+            metrics["le"] = f"{-energies[0] / heavy_atoms:.3f}"
+        if len(energies) > 1:
+            metrics["gap"] = f"{energies[1] - energies[0]:.3f}"
+    if rmsd_values:
+        metrics["rmsd"] = f"{sum(rmsd_values) / len(rmsd_values):.3f}"
+    return metrics
 
 
-RESULT_CSV_HEADER = ["LIGAND", "SMILES", "LIGAND DATABANK", "TARGET", "BINDING ENERGY (Kcal/mol)", "RMSD (mean)"]
+def _parse_vina_pose_data(output_file: str) -> tuple[str, str, str]:
+    """(best energy, mean RMSD across all poses, SMILES) of a Vina output PDBQT - see _parse_vina_result_metrics."""
+    metrics = _parse_vina_result_metrics(output_file)
+    return metrics["energy"], metrics["rmsd"], metrics["smiles"]
+
+
+RESULT_CSV_HEADER = [
+    "LIGAND", "SMILES", "LIGAND DATABANK", "TARGET", "BINDING ENERGY (Kcal/mol)", "RMSD (mean)",
+    LE_COLUMN, GAP_COLUMN, INTER_COLUMN,
+]
+
+
+def _result_csv_row(ligand_name: str, ligand_group: str, target_name: str, output_file: str) -> list[str]:
+    """One line of the results CSV, read from the ligand's Vina output."""
+    metrics = _parse_vina_result_metrics(output_file)
+    return [
+        ligand_name, metrics["smiles"], ligand_group, target_name, metrics["energy"], metrics["rmsd"],
+        metrics["le"], metrics["gap"], metrics["inter"],
+    ]
 
 
 def _parse_grid_file(path: str) -> dict[str, float | int]:
@@ -569,6 +676,7 @@ class DockingWorker(QThread):
     progress_text = pyqtSignal(str)
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal(str)
 
     def __init__(
         self,
@@ -590,10 +698,48 @@ class DockingWorker(QThread):
         self.settings = settings
         self.docking_type = docking_type
         self.processing_type = processing_type
+        self._csv_lock = threading.Lock()          # the GPU groups of different devices write the same CSV
+        # What the Docking monitor shows when it cannot read Vina-GPU's progress file (Vina 1.2.5 on the CPU
+        # writes none; parallel GPU runs would share one): the ligands of this run, counted here as they finish.
+        self.jobs_total = 0
+        self.jobs_done = 0
+        self.started_at: Optional[float] = None
+        self.finished_at: Optional[float] = None
+        self.uses_vina_progress_file = False
+        self._cancel_event = threading.Event()
+        self._running_processes: list[subprocess.Popen] = []
+        self._process_lock = threading.Lock()
         self.skipped_existing = 0   # ligands whose result is already in the project (resume)
         self.vina = os.path.join(app_dir, "BIN", "vina_1.2.5_linux_x86_64")
         self.vina_split = os.path.join(app_dir, "BIN", "vina_split_1.2.5_linux_x86_64")
         self.vina_gpu = os.path.join(str(Path.home()), "Vina-GPU-2.1", "AutoDock-Vina-GPU-2.1", "AutoDock-Vina-GPU-2-1")
+
+    def request_cancel(self) -> None:
+        """Stop the docking: the Vina / Vina-GPU processes in course are terminated and no new ligand or group is
+        started. Every ligand already docked stays in the project, and Run docking continues from there."""
+        self._cancel_event.set()
+        with self._process_lock:
+            for process in self._running_processes:
+                process.terminate()
+
+    def _run_process(self, command: list[str], cwd: Optional[str] = None) -> tuple[int, str]:
+        """subprocess.run that Cancel can interrupt. Returns (exit code, output); raises OperationCancelled
+        when the process was stopped by a cancel."""
+        if self._cancel_event.is_set():
+            raise OperationCancelled()
+        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with self._process_lock:
+            self._running_processes.append(process)
+            if self._cancel_event.is_set():       # Cancel arrived between the check and the registration
+                process.terminate()
+        try:
+            output, _ = process.communicate()
+        finally:
+            with self._process_lock:
+                self._running_processes.remove(process)
+        if self._cancel_event.is_set():
+            raise OperationCancelled()
+        return process.returncode, output
 
     def run(self) -> None:
         try:
@@ -613,11 +759,20 @@ class DockingWorker(QThread):
                     )
                 return
 
-            if self.processing_type == "GPU":
-                self._run_gpu_jobs(result_folder, pending_jobs)
-            else:
-                self._run_cpu_jobs(result_folder, pending_jobs)
+            self.jobs_total = len(pending_jobs)
+            self.started_at = time.monotonic()
+            try:
+                if self.processing_type == "GPU":
+                    self._run_gpu_jobs(result_folder, pending_jobs)
+                else:
+                    self._run_cpu_jobs(result_folder, pending_jobs)
+            finally:
+                self.finished_at = time.monotonic()
             self.finished_ok.emit(f"Docking finished for project {self.job_name}. Results available in {result_folder}.")
+        except OperationCancelled:
+            self.cancelled.emit(
+                "Docking cancelled. The ligands already docked were kept: run docking again to continue from there."
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -663,7 +818,12 @@ class DockingWorker(QThread):
                     ligand_name = ligand_file.stem
                     ligand_out_dir = os.path.join(lig_result_group_dir, ligand_name)
                     ligand_out_file = os.path.join(ligand_out_dir, f"{ligand_name}.pdbqt")
+                    if _is_complete_vina_output(ligand_out_file):
+                        self.skipped_existing += 1
+                        continue
                     if os.path.isfile(ligand_out_file):
+                        os.remove(ligand_out_file)          # cut short by a crash: dock this ligand again
+                    if self._adopt_interrupted_gpu_output(lig_result_group_dir, ligand_name, ligand_out_dir, ligand_out_file):
                         self.skipped_existing += 1
                         continue
                     jobs.append(
@@ -679,6 +839,18 @@ class DockingWorker(QThread):
                         }
                     )
         return jobs
+
+    def _adopt_interrupted_gpu_output(self, group_dir: str, ligand_name: str, ligand_out_dir: str, ligand_out_file: str) -> bool:
+        """Vina-GPU writes each ligand's result in the group folder as it goes, and CODOC files it under its own
+        folder only when the whole group run ends. If that run was interrupted (power failure, crash, Cancel),
+        the finished results are still lying there: file them now instead of docking those ligands again."""
+        for flat_name in (f"{ligand_name}_out.pdbqt", f"{ligand_name}.pdbqt"):
+            flat_path = os.path.join(group_dir, flat_name)
+            if os.path.isfile(flat_path) and _is_complete_vina_output(flat_path):
+                os.makedirs(ligand_out_dir, exist_ok=True)
+                shutil.move(flat_path, ligand_out_file)
+                return True
+        return False
 
     def _target_requirements(self, target_path: Path) -> dict[str, str]:
         grid_path = target_path / "grid.txt"
@@ -736,16 +908,25 @@ class DockingWorker(QThread):
                 f"Running {self.docking_type} docking on {job['ligand_name']} against {job['target_name']} "
                 f"({index}/{total})"
             )
-            result = subprocess.run([self.vina, "--config", config_path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            if result.returncode != 0:
+            try:
+                returncode, output = self._run_process([self.vina, "--config", config_path])
+            except OperationCancelled:
+                if not _is_complete_vina_output(job["output_file"]):
+                    Path(job["output_file"]).unlink(missing_ok=True)       # the ligand in course is not kept half done
+                raise
+            if returncode != 0:
                 raise RuntimeError(
-                    f"Docking failed for ligand {job['ligand_name']} and target {job['target_name']}:\n{result.stdout}"
+                    f"Docking failed for ligand {job['ligand_name']} and target {job['target_name']}:\n{output}"
                 )
             if self.settings.split_results and os.path.isfile(self.vina_split):
-                subprocess.run([self.vina_split, "--input", job["output_file"]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                self._run_process([self.vina_split, "--input", job["output_file"]])
             self._append_csv_result(csv_path, job["target_name"], job["ligand_group"], job["ligand_name"], job["output_file"])
+            self.jobs_done += 1
 
     def _run_gpu_jobs(self, result_folder: str, jobs: list[dict[str, str]]) -> None:
+        """Vina-GPU docks one ligand group (a folder) of one target per run, on one OpenCL device. With several
+        devices selected, one worker thread per device takes the next pending (target, ligand group) from a
+        shared list, so the GPUs work at the same time and a faster one simply takes more groups."""
         grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
         for job in jobs:
             grouped.setdefault((job["target_name"], job["ligand_group"]), []).append(job)
@@ -753,37 +934,103 @@ class DockingWorker(QThread):
         total = len(grouped)
         csv_path = self._run_csv_path(result_folder)
         self._ensure_result_csv(csv_path)
+        devices = list(dict.fromkeys(self.settings.opencl_device_ids)) or [-1]       # -1: the OpenCL default device
+        devices = devices[:total] or devices[:1]
+        self.uses_vina_progress_file = len(devices) == 1      # with parallel runs the file is shared, so it is not trusted
         self.progress_text.emit(
-            f"Using OpenCL selection: platform_id={self.settings.opencl_platform_id} "
-            f"device_id={self.settings.opencl_device_id}"
+            f"Using OpenCL platform_id={self.settings.opencl_platform_id}, device_id(s)="
+            f"{', '.join(str(d) for d in devices) if devices != [-1] else 'default'} "
+            f"for {total} ligand group(s)."
         )
-        for index, ((target_name, ligand_group), group_jobs) in enumerate(grouped.items(), start=1):
-            ligand_dir = str(Path(group_jobs[0]["ligand_file"]).parent)
-            output_dir = os.path.join(result_folder, target_name, ligand_group)
-            config_path = os.path.join(output_dir, "gpu_config.txt")
-            self._write_gpu_config(config_path, group_jobs[0], ligand_dir, output_dir)
-            self.progress_text.emit(f"Running GPU docking on group {ligand_group} against {target_name} ({index}/{total})")
-            result = subprocess.run(
-                [self.vina_gpu, "--config", config_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=self.app_dir,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"GPU docking failed for {target_name}/{ligand_group}:\n{result.stdout}")
 
+        pending: "queue.Queue[tuple[int, tuple[str, str], list[dict[str, str]]]]" = queue.Queue()
+        for index, (key, group_jobs) in enumerate(grouped.items(), start=1):
+            pending.put((index, key, group_jobs))
+        finished_groups = [0]
+        failures: list[Exception] = []
+        abort = threading.Event()
+
+        def work(device_id: int) -> None:
+            while not abort.is_set():
+                try:
+                    index, (target_name, ligand_group), group_jobs = pending.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    self._run_gpu_group(
+                        result_folder, csv_path, index, total, target_name, ligand_group, group_jobs,
+                        device_id, show_device=len(devices) > 1,
+                    )
+                except OperationCancelled:
+                    abort.set()
+                    return
+                except Exception as exc:        # the first failure stops the other devices after their current group
+                    failures.append(exc)
+                    abort.set()
+                    return
+                with self._csv_lock:
+                    finished_groups[0] += 1
+                    self.jobs_done += len(group_jobs)
+                    self.progress_value.emit(int(finished_groups[0] * 100 / total))
+
+        threads = [threading.Thread(target=work, args=(device_id,), daemon=True) for device_id in devices]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if failures:
+            raise failures[0]
+        if self._cancel_event.is_set():
+            raise OperationCancelled()
+
+    def _run_gpu_group(
+        self,
+        result_folder: str,
+        csv_path: str,
+        index: int,
+        total: int,
+        target_name: str,
+        ligand_group: str,
+        group_jobs: list[dict[str, str]],
+        device_id: int,
+        show_device: bool,
+    ) -> None:
+        """One Vina-GPU run: the ligand group `ligand_group` against `target_name`, on OpenCL device `device_id`."""
+        ligand_dir = str(Path(group_jobs[0]["ligand_file"]).parent)
+        output_dir = os.path.join(result_folder, target_name, ligand_group)
+        config_path = os.path.join(output_dir, "gpu_config.txt")
+        # Vina-GPU docks every ligand of the directory it is given. When some ligands of the group are already
+        # docked (a resumed run), give it a folder of links to the pending ones only, so they are not docked again.
+        pending_dir = ""
+        if len(group_jobs) < sum(1 for _ in Path(ligand_dir).glob("*.pdbqt")):
+            pending_dir = os.path.join(output_dir, "_pending_ligands")
+            shutil.rmtree(pending_dir, ignore_errors=True)
+            os.makedirs(pending_dir)
             for job in group_jobs:
-                flat_output = os.path.join(output_dir, f"{job['ligand_name']}_out.pdbqt")
-                if not os.path.isfile(flat_output):
-                    alt_output = os.path.join(output_dir, f"{job['ligand_name']}.pdbqt")
-                    if os.path.isfile(alt_output):
-                        flat_output = alt_output
-                    else:
-                        continue
-                os.makedirs(job["output_dir"], exist_ok=True)
-                shutil.move(flat_output, job["output_file"])
-                self._append_csv_result(csv_path, target_name, ligand_group, job["ligand_name"], job["output_file"])
+                os.symlink(os.path.abspath(job["ligand_file"]), os.path.join(pending_dir, os.path.basename(job["ligand_file"])))
+            ligand_dir = pending_dir
+        self._write_gpu_config(config_path, group_jobs[0], ligand_dir, output_dir, device_id)
+        where = f" on OpenCL device {device_id}" if show_device else ""
+        self.progress_text.emit(f"Running GPU docking on group {ligand_group} against {target_name} ({index}/{total}){where}")
+        try:
+            returncode, output = self._run_process([self.vina_gpu, "--config", config_path], cwd=self.app_dir)
+        finally:
+            if pending_dir:
+                shutil.rmtree(pending_dir, ignore_errors=True)
+        if returncode != 0:
+            raise RuntimeError(f"GPU docking failed for {target_name}/{ligand_group}{where}:\n{output}")
+
+        for job in group_jobs:
+            flat_output = os.path.join(output_dir, f"{job['ligand_name']}_out.pdbqt")
+            if not os.path.isfile(flat_output):
+                alt_output = os.path.join(output_dir, f"{job['ligand_name']}.pdbqt")
+                if os.path.isfile(alt_output):
+                    flat_output = alt_output
+                else:
+                    continue
+            os.makedirs(job["output_dir"], exist_ok=True)
+            shutil.move(flat_output, job["output_file"])
+            self._append_csv_result(csv_path, target_name, ligand_group, job["ligand_name"], job["output_file"])
 
     def _write_cpu_config(self, config_path: str, job: dict[str, str]) -> None:
         lines = [
@@ -813,7 +1060,7 @@ class DockingWorker(QThread):
         with open(config_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
 
-    def _write_gpu_config(self, config_path: str, job: dict[str, str], ligand_dir: str, output_dir: str) -> None:
+    def _write_gpu_config(self, config_path: str, job: dict[str, str], ligand_dir: str, output_dir: str, device_id: int) -> None:
         lines = [
             f"receptor = {job['receptor']}",
             f"ligand_directory = {ligand_dir}",
@@ -829,8 +1076,8 @@ class DockingWorker(QThread):
         ]
         if self.settings.opencl_platform_id >= 0:
             lines.append(f"platform_id = {self.settings.opencl_platform_id}")
-        if self.settings.opencl_device_id >= 0:
-            lines.append(f"device_id = {self.settings.opencl_device_id}")
+        if device_id >= 0:
+            lines.append(f"device_id = {device_id}")
         if self.docking_type == "Flexible":
             lines.insert(1, f"flex = {job['flex_receptor']}")
         with open(config_path, "w", encoding="utf-8") as handle:
@@ -840,17 +1087,19 @@ class DockingWorker(QThread):
         return os.path.join(result_folder, f"{self.job_name}.csv")
 
     def _ensure_result_csv(self, csv_path: str) -> None:
+        """Make sure the CSV starts with the current header. A CSV from an older version (fewer columns) is
+        restarted: STEP 4 rebuilds the whole file from the ligands' output PDBQTs every time it loads results."""
         if os.path.isfile(csv_path):
-            return
+            with open(csv_path, "r", encoding="utf-8", newline="") as handle:
+                if next(csv.reader(handle), None) == RESULT_CSV_HEADER:
+                    return
         with open(csv_path, "w", encoding="utf-8", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(RESULT_CSV_HEADER)
+            csv.writer(handle).writerow(RESULT_CSV_HEADER)
 
     def _append_csv_result(self, csv_path: str, target_name: str, ligand_group: str, ligand_name: str, output_file: str) -> None:
-        energy, rmsd_mean, smiles = _parse_vina_pose_data(output_file)
-        with open(csv_path, "a", encoding="utf-8", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow([ligand_name, smiles, ligand_group, target_name, energy, rmsd_mean])
+        row = _result_csv_row(ligand_name, ligand_group, target_name, output_file)
+        with self._csv_lock, open(csv_path, "a", encoding="utf-8", newline="") as handle:
+            csv.writer(handle).writerow(row)
 
 
 # --------------------------------------------------------------------------------------
@@ -976,6 +1225,50 @@ def _lig_prepare_3d_molecule(mol: Any, minimization_steps: int, forcefield: str,
         return None
 
 
+def _lig_neutralize_non_basic_nitrogens(smiles: str) -> str:
+    """Undo the charges Dimorphite-DL puts where a nitrogen cannot hold them at physiological pH.
+
+    Dimorphite-DL 2.x lists, and with pKa precision 0 even picks:
+      - the ammonium form of tertiary amides, carbamates and ureas, sulfonamides and enaminones
+        (N-C=C-C=O): `CN(C)C(=O)C` comes back as `CC(=O)[NH+](C)C`. Their lone pair is delocalised
+        (pKa far below any pH of interest);
+      - the anion of the N-H of imidazole, benzimidazole, pyrazole and triazole (`c1cnc[nH]1` as
+        `c1c[n-]cn1`; pKa 10 to 14). Tetrazoles, which really are acids (pKa about 5), are kept.
+    A charge there would dock a wrong molecule. Real amines (aliphatic, N-aryl piperazines...), acids
+    and amidines are not touched."""
+    _lig_require_rdkit()
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return smiles
+    cations = mol.GetSubstructMatches(Chem.MolFromSmarts(
+        "[NX4+;$([N+]-[#6]=[O,S]),$([N+]-[SX4](=O)=O),$([N+]-[#6]=[#6]-[#6]=O)]"))
+    ring_info = mol.GetRingInfo()
+    anions = []
+    for (index,) in mol.GetSubstructMatches(Chem.MolFromSmarts("[n-]")):
+        for ring in ring_info.AtomRings():
+            if index in ring and len(ring) == 5:
+                if sum(1 for i in ring if mol.GetAtomWithIdx(i).GetSymbol() == "N") < 4:
+                    anions.append((index,))
+                break
+    if not cations and not anions:
+        return smiles
+    editable = Chem.RWMol(mol)
+    for (index,) in cations:
+        atom = editable.GetAtomWithIdx(index)
+        atom.SetFormalCharge(0)
+        atom.SetNumExplicitHs(max(0, atom.GetNumExplicitHs() - 1))
+    for (index,) in anions:
+        atom = editable.GetAtomWithIdx(index)
+        atom.SetFormalCharge(0)
+        atom.SetNumExplicitHs(atom.GetNumExplicitHs() + 1)
+    try:
+        fixed = editable.GetMol()
+        Chem.SanitizeMol(fixed)
+    except Exception:
+        return smiles
+    return Chem.MolToSmiles(fixed)
+
+
 def _lig_protonate_smiles(smiles: str, ph: float) -> str:
     """Return the dominant ionization state of `smiles` at `ph`, per Dimorphite-DL's SMARTS/pKa rules.
 
@@ -997,7 +1290,7 @@ def _lig_protonate_smiles(smiles: str, ph: float) -> str:
             variants = dimorphite_dl.DimorphiteDL(min_ph=ph, max_ph=ph, pka_precision=0.0).protonate(smiles)
     except Exception:
         return smiles
-    return sorted(variants)[0] if variants else smiles
+    return _lig_neutralize_non_basic_nitrogens(sorted(variants)[0]) if variants else smiles
 
 
 def _lig_prepend_pdbqt_metadata(pdbqt_path: Path, ligand_name: str, smiles: str) -> None:
@@ -1161,6 +1454,7 @@ class LigandToolsWorker(QThread):
     progress_text = pyqtSignal(str)
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal(str)
 
     def __init__(
         self,
@@ -1185,6 +1479,12 @@ class LigandToolsWorker(QThread):
         self.empty_dir = os.path.join(conversion_dir, "EMPTY_LIGANDS")
         self.dataframes_dir = os.path.join(conversion_dir, "DATAFRAMES")
         self.macrocycles_dir = os.path.join(conversion_dir, "MACROCYCLES")
+        self._cancel_event = threading.Event()
+
+    def request_cancel(self) -> None:
+        """Ask the running action to stop: it ends at the next ligand/file it finishes (what was already
+        done stays done, and the action can be run again to continue)."""
+        self._cancel_event.set()
 
     def run(self) -> None:
         try:
@@ -1206,10 +1506,14 @@ class LigandToolsWorker(QThread):
                 raise RuntimeError(f"Unsupported ligand operation: {self.operation}")
             message = handler()
             self.finished_ok.emit(message)
+        except OperationCancelled:
+            self.cancelled.emit("Cancelled by the user. What was already done was kept; run the action again to continue.")
         except Exception as exc:
             self.failed.emit(str(exc))
 
     def _emit_progress(self, index: int, total: int, text: str) -> None:
+        if self._cancel_event.is_set():           # every routine reports each item it handles through here
+            raise OperationCancelled()
         value = int(index * 100 / max(total, 1))
         self.progress_value.emit(value)
         self.progress_text.emit(text)
@@ -1635,7 +1939,19 @@ class LigandToolsWorker(QThread):
                     _, error, note = future.result()
                 except Exception as exc:
                     error = f"Worker process failed for {input_path.name}: {exc}"
-                self._emit_progress(counter, total, f"Converting {input_path.name} to PDBQT using {selected_engine}")
+                try:
+                    self._emit_progress(counter, total, f"Converting {input_path.name} to PDBQT using {selected_engine}")
+                except OperationCancelled:
+                    # drop the ligands not started and stop the ones in course, then clean up what was finished
+                    running_processes = list((getattr(executor, "_processes", None) or {}).values())   # shutdown() empties it
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    for process in running_processes:
+                        process.terminate()
+                    if error is None and output_path.is_file():
+                        finished_inputs.append(input_path)
+                    for done_input in finished_inputs:
+                        done_input.unlink(missing_ok=True)
+                    raise
                 if note:
                     fallback_count += 1
                     self.progress_text.emit(note)
@@ -2143,8 +2459,25 @@ class MainWindow(QMainWindow):
         self._update_project_status()
         if hasattr(self, "lbl_proj_id"):
             self.lbl_proj_id.setText(self.project.name or "-")      # the project open now, not the selected one
-        if hasattr(self, "lbl_results_project"):
-            self.lbl_results_project.setText(self._t("s4_lbl_project", name=self.project.name or "-"))
+        self._refresh_results_project_combo()
+
+    def _refresh_results_project_combo(self) -> None:
+        """STEP 4 "Projects" list: every project of the PROJECTS folder, the open one selected."""
+        if not hasattr(self, "cb_results_project"):
+            return
+        self.cb_results_project.blockSignals(True)
+        self.cb_results_project.clear()
+        self.cb_results_project.addItems(list_projects(self.app_dir))
+        self.cb_results_project.setCurrentIndex(self.cb_results_project.findText(self.project.name) if self.project.is_open else -1)
+        self.cb_results_project.blockSignals(False)
+
+    def _open_project_from_results(self) -> None:
+        """Picking another project in STEP 4 opens it (its results, ligands and settings)."""
+        name = self.cb_results_project.currentText().strip()
+        if not name or (self.project.is_open and name == self.project.name):
+            return
+        self._leave_current_project()
+        self.project.open(os.path.join(projects_root(self.app_dir), name))
 
     def _on_project_changed(self, path: str) -> None:
         if path:
@@ -2154,6 +2487,7 @@ class MainWindow(QMainWindow):
             self._refresh_previous_projects(select=self.project.name)
             self.cb_prev_project.setCurrentText(self.project.name)
         self._refresh_project_texts()
+        self._reset_ligand_clock()
         self._refresh_ligand_monitor()
         self._refresh_targets_summary()
         self._populate_prepared_targets()
@@ -2942,7 +3276,14 @@ class MainWindow(QMainWindow):
         self.sp_cpu_threads = QSpinBox(); self.sp_cpu_threads.setRange(1, 512)
         self.sp_gpu_threads = QSpinBox(); self.sp_gpu_threads.setRange(1, 500000)
         self.cb_opencl_platform = QComboBox()
-        self.cb_opencl_device = QComboBox()
+        self.lst_opencl_devices = QListWidget()      # one checkbox per GPU of the platform: the docking is spread over the ticked ones
+        self.lst_opencl_devices.setSelectionMode(QAbstractItemView.NoSelection)
+        self.lst_opencl_devices.setFocusPolicy(Qt.NoFocus)
+        self.lst_opencl_devices.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.lst_opencl_devices.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.lst_opencl_devices.setTextElideMode(Qt.ElideRight)
+        self.lst_opencl_devices.itemChanged.connect(self._on_opencl_device_toggled)
+        self._tr("cfg_tip_opencl_devices", self.lst_opencl_devices.setToolTip)
         self.cb_opencl_platform.currentIndexChanged.connect(self._update_opencl_device_choices)
         self.cb_processing_type.currentTextChanged.connect(self._toggle_docking_mode_options)
         for key, widget in (
@@ -2950,7 +3291,7 @@ class MainWindow(QMainWindow):
             ("cfg_lbl_cpu_threads", self.sp_cpu_threads),
             ("cfg_lbl_gpu_threads", self.sp_gpu_threads),
             ("cfg_lbl_opencl_platform", self.cb_opencl_platform),
-            ("cfg_lbl_opencl_device", self.cb_opencl_device),
+            ("cfg_lbl_opencl_device", self.lst_opencl_devices),
         ):
             label = QLabel(); self._tr(key, label.setText)
             perf_form.addRow(label, widget)
@@ -3254,6 +3595,46 @@ class MainWindow(QMainWindow):
         actions_layout.setVerticalSpacing(10)
         actions_layout.setAlignment(Qt.AlignCenter)
 
+        # Clocks of the running action, below the buttons. They start and stop with every action but are not
+        # zeroed between one and the next: Running time adds up the time of all the actions of the project, so
+        # a long conversion done in several steps is timed as a whole; ETA (time left) and Estim. completion
+        # (the clock time it should end) are estimated from the progress of the action in course.
+        self.lbl_lig_eta = QLabel("-")
+        self.lbl_lig_running = QLabel("-")
+        self.lbl_lig_completion = QLabel("-")
+        clocks = QGridLayout()
+        clocks.setHorizontalSpacing(12)
+        clocks.setVerticalSpacing(4)
+        for row_idx, (label_key, value_label) in enumerate((
+            ("s3_lbl_eta", self.lbl_lig_eta),
+            ("s3_lbl_running_time", self.lbl_lig_running),
+            ("s3_lbl_completion", self.lbl_lig_completion),
+        )):
+            caption = QLabel(); self._tr(label_key, caption.setText)
+            clocks.addWidget(caption, row_idx, 0)
+            clocks.addWidget(value_label, row_idx, 1)
+        self._tr("s1_tip_eta", self.lbl_lig_eta.setToolTip)
+        self._tr("s1_tip_completion", self.lbl_lig_completion.setToolTip)
+        clocks_wrap = QHBoxLayout()
+        clocks_wrap.addStretch(1)
+        clocks_wrap.addLayout(clocks)
+        clocks_wrap.addStretch(1)
+        actions_layout.addLayout(clocks_wrap, (len(ligand_actions) + 1) // 2, 0, 1, 2)
+        self.btn_lig_cancel = QPushButton()
+        self._tr("btn_cancel", self.btn_lig_cancel.setText)
+        self.btn_lig_cancel.setStyleSheet(_SS_BTN_CANCEL)
+        self.btn_lig_cancel.setFixedWidth(180)
+        self.btn_lig_cancel.setEnabled(False)               # only while an action is running
+        self._tr("s1_tip_cancel", self.btn_lig_cancel.setToolTip)
+        self.btn_lig_cancel.clicked.connect(self._cancel_ligand_tool)
+        actions_layout.addWidget(self.btn_lig_cancel, (len(ligand_actions) + 1) // 2 + 1, 0, 1, 2, Qt.AlignHCenter)
+        self._lig_elapsed_total = 0.0            # seconds of the actions already finished in this project
+        self._lig_run_started: Optional[float] = None
+        self._lig_progress = 0
+        self.ligand_clock_timer = QTimer(self)
+        self.ligand_clock_timer.setInterval(1000)
+        self.ligand_clock_timer.timeout.connect(self._tick_ligand_clock)
+
         druggability_actions_row = QHBoxLayout()
         druggability_actions_row.setSpacing(14)
         druggability_actions_row.addWidget(druggability_box, 1)
@@ -3403,7 +3784,7 @@ class MainWindow(QMainWindow):
         rigid_file_block = captioned("s2_lbl_target_file", stacked(self.ed_target_file, gray_button("s2_btn_choose_target", self._choose_target_file)))
         ph_block, _ph_label = inline("s2_lbl_protonation_ph", self.sp_target_ph)
         self.chk_target_rigid = add_mode("rigid", "s2_opt_rigid", [rigid_file_block, ph_block])
-        target_layout.addSpacing(12)
+        target_layout.addStretch(1)
         target_layout.addWidget(self.chk_target_rigid)
         target_layout.addWidget(rigid_file_block)
         target_layout.addWidget(ph_block)
@@ -3418,7 +3799,7 @@ class MainWindow(QMainWindow):
             gray_button("s2_btn_choose_flex", lambda: self._choose_pdbqt_file(self.ed_target_flex_file, "Select flexible receptor PDBQT")),
         ))
         self.chk_target_flexible = add_mode("flexible", "s2_opt_flexible", [rigid_receptor_block, flex_receptor_block])
-        target_layout.addSpacing(12)
+        target_layout.addStretch(1)
         target_layout.addWidget(self.chk_target_flexible)
         target_layout.addWidget(rigid_receptor_block)
         target_layout.addWidget(flex_receptor_block)
@@ -3428,10 +3809,9 @@ class MainWindow(QMainWindow):
         self.cb_redock_ligand = QComboBox()
         btn_export_redock = gray_button("s2_btn_export_redock", self.export_cocrystal_ligand_for_redocking)
         self._tr("s2_tooltip_export_redock", btn_export_redock.setToolTip)
-        target_layout.addSpacing(12)
+        target_layout.addStretch(1)
         target_layout.addWidget(captioned("s2_lbl_redock_ligand", self.cb_redock_ligand))
         target_layout.addWidget(btn_export_redock, 0, Qt.AlignHCenter)
-        target_layout.addStretch(1)
 
         # ---------------------------------------------------------------- Grid Parameters
         # Five ways to get the grid. Ticking one disables the others; each one, when run, fills the
@@ -3440,23 +3820,33 @@ class MainWindow(QMainWindow):
         self._tr("s2_grp_grid_params", grid_box.setTitle)
         grid_layout = QVBoxLayout(grid_box)
         grid_layout.setSpacing(4)
-        self._grid_options: dict[str, tuple[QCheckBox, QWidget]] = {}
+        self._grid_options: dict[str, tuple[QCheckBox, list[QWidget]]] = {}
         self._grid_method_group = QButtonGroup(self)      # exactly one method is always ticked
         self._grid_method_group.setExclusive(True)
 
-        def add_option(method: str, title_key: str, body_layout) -> None:
+        def add_option(method: str, title_key: str, body_layout, title_widget: Optional[QWidget] = None) -> None:
+            """A numbered option: its checkbox (with `title_widget` on the same line, if any) and its fields below."""
             check = QCheckBox()
             self._tr(title_key, check.setText)
             check.toggled.connect(lambda checked, m=method: self._sync_grid_methods(m, checked))
             self._grid_method_group.addButton(check)
             body = QWidget(); body.setLayout(body_layout)
-            body_layout.setContentsMargins(22, 0, 0, 6)
-            grid_layout.addWidget(check)
+            body_layout.setContentsMargins(22, 0, 0, 0)
+            grid_layout.addStretch(1)
+            if title_widget is None:
+                grid_layout.addWidget(check)
+            else:
+                title_row = QHBoxLayout()
+                title_row.setSpacing(10)
+                title_row.addWidget(check)
+                title_row.addWidget(title_widget)
+                title_row.addStretch(1)
+                grid_layout.addLayout(title_row)
             grid_layout.addWidget(body)
-            self._grid_options[method] = (check, body)
+            self._grid_options[method] = (check, [body] + ([title_widget] if title_widget is not None else []))
 
         # 1. Heuristic search (P2Rank): the pocket Rank to use, its Score, and the Detect button
-        self.sp_pocket_rank = QSpinBox(); self.sp_pocket_rank.setRange(1, 1); self.sp_pocket_rank.setFixedWidth(90)
+        self.sp_pocket_rank = QSpinBox(); self.sp_pocket_rank.setRange(1, 1); self.sp_pocket_rank.setFixedWidth(80)
         self.sp_pocket_rank.valueChanged.connect(self._on_pocket_rank_changed)
         self.ed_pocket_score = QLineEdit(); self.ed_pocket_score.setReadOnly(True); self.ed_pocket_score.setFixedWidth(150)
         self._tr("s2_tooltip_pocket_rank", self.sp_pocket_rank.setToolTip)
@@ -3465,18 +3855,15 @@ class MainWindow(QMainWindow):
         self._tr("s2_btn_detect_pocket", btn_detect_pocket.setText)
         self._tr("s2_tooltip_detect_pocket", btn_detect_pocket.setToolTip)
         btn_detect_pocket.clicked.connect(self.detect_pocket_p2rank)
-        heuristic_layout = QGridLayout()
-        heuristic_layout.setHorizontalSpacing(10)
-        heuristic_layout.setVerticalSpacing(6)
-        lbl_rank = QLabel(); self._tr("s2_lbl_rank", lbl_rank.setText)
+        rank_wrap, _rank_label = inline("s2_lbl_rank", self.sp_pocket_rank)
+        heuristic_layout = QHBoxLayout()
+        heuristic_layout.setSpacing(10)
         lbl_score = QLabel(); self._tr("s2_lbl_score", lbl_score.setText)
-        heuristic_layout.addWidget(lbl_rank, 0, 0)
-        heuristic_layout.addWidget(self.sp_pocket_rank, 0, 1)
-        heuristic_layout.addWidget(lbl_score, 1, 0)
-        heuristic_layout.addWidget(self.ed_pocket_score, 1, 1)
-        heuristic_layout.addWidget(btn_detect_pocket, 1, 2)
-        heuristic_layout.setColumnStretch(3, 1)
-        add_option("heuristic", "s2_opt_heuristic", heuristic_layout)
+        heuristic_layout.addWidget(lbl_score)
+        heuristic_layout.addWidget(self.ed_pocket_score)
+        heuristic_layout.addWidget(btn_detect_pocket)
+        heuristic_layout.addStretch(1)
+        add_option("heuristic", "s2_opt_heuristic", heuristic_layout, title_widget=rank_wrap)
 
         # 2. Existing grid file
         self.ed_target_grid_file = QLineEdit()
@@ -3532,11 +3919,11 @@ class MainWindow(QMainWindow):
                 grid_params_grid.addWidget(caption, block * 2, col)
                 grid_params_grid.addWidget(spin, block * 2 + 1, col)
             grid_params_grid.setRowMinimumHeight(block * 2 + 2, 6)
-        grid_layout.addLayout(grid_params_grid)
-        lbl_grid_spacing = QLabel(); self._tr("s2_lbl_grid_spacing", lbl_grid_spacing.setText)
-        grid_layout.addWidget(lbl_grid_spacing)
-        grid_layout.addWidget(self.sp_spacing)
         grid_layout.addStretch(1)
+        grid_layout.addLayout(grid_params_grid)
+        grid_layout.addStretch(1)
+        spacing_block, _spacing_label = inline("s2_lbl_grid_spacing", self.sp_spacing)
+        grid_layout.addWidget(spacing_block)
 
         target_row = QHBoxLayout()
         target_row.setSpacing(14)
@@ -3627,7 +4014,7 @@ class MainWindow(QMainWindow):
         self.cb_scoring.addItems(["vina", "ad4", "vinardo"])
         self.cb_split = QComboBox()
         self.cb_split.addItems(["no", "yes"])
-        self.sp_exhaustiveness = QSpinBox(); self.sp_exhaustiveness.setRange(1, 32768)
+        self.sp_exhaustiveness = QSpinBox(); self.sp_exhaustiveness.setRange(1, 32768); self.sp_exhaustiveness.setSingleStep(8)
         self.sp_poses = QSpinBox(); self.sp_poses.setRange(1, 100)
         self.sp_min_rmsd = QDoubleSpinBox(); self.sp_min_rmsd.setRange(0.0, 100.0); self.sp_min_rmsd.setDecimals(3)
         self.sp_energy = QDoubleSpinBox(); self.sp_energy.setRange(0.0, 100.0); self.sp_energy.setDecimals(3)
@@ -3702,7 +4089,20 @@ class MainWindow(QMainWindow):
         monitor_column = QVBoxLayout()
         monitor_column.setSpacing(10)
         monitor_column.addWidget(monitor_group)
-        monitor_column.addWidget(btn_run, 0, Qt.AlignHCenter)
+        self.btn_docking_cancel = QPushButton()
+        self._tr("btn_cancel", self.btn_docking_cancel.setText)
+        self.btn_docking_cancel.setStyleSheet(_SS_BTN_CANCEL)
+        self.btn_docking_cancel.setFixedWidth(180)
+        self.btn_docking_cancel.setEnabled(False)           # only while a docking is running
+        self._tr("s3_tip_cancel", self.btn_docking_cancel.setToolTip)
+        self.btn_docking_cancel.clicked.connect(self._cancel_docking)
+        run_row = QHBoxLayout()
+        run_row.setSpacing(12)
+        run_row.addStretch(1)
+        run_row.addWidget(btn_run)
+        run_row.addWidget(self.btn_docking_cancel)
+        run_row.addStretch(1)
+        monitor_column.addLayout(run_row)
         monitor_column.addStretch(1)
         params_row.addLayout(monitor_column, 0)
         params_wrap = QWidget()
@@ -3738,96 +4138,124 @@ class MainWindow(QMainWindow):
             row_wrap.addStretch(1)
             layout.addLayout(row_wrap)
 
+        # Result filters (left, narrow) and Result controls (right) side by side, 1000 px in all.
         filters_box = QGroupBox()
         self._tr("s4_grp_filters", filters_box.setTitle)
-        filters_form = QFormLayout(filters_box)
+        filters_box.setFixedWidth(240)
+        filters_layout = QVBoxLayout(filters_box)
+        filters_layout.setSpacing(4)
         self.sp_result_top_n = QSpinBox(); self.sp_result_top_n.setRange(1, 100000)
         self.sp_result_rmsd = QDoubleSpinBox(); self.sp_result_rmsd.setRange(0.0, 1000.0); self.sp_result_rmsd.setDecimals(4)
-        lbl_top_ligands = QLabel(); self._tr("s4_lbl_top_ligands", lbl_top_ligands.setText)
-        filters_form.addRow(lbl_top_ligands, self.sp_result_top_n)
-        lbl_rmsd_threshold = QLabel(); self._tr("s4_lbl_rmsd_threshold", lbl_rmsd_threshold.setText)
-        filters_form.addRow(lbl_rmsd_threshold, self.sp_result_rmsd)
-        add_centered_group(filters_box)
+        # Every filter has its own checkbox: Top ligands and RMSD threshold are on by default, the three
+        # filters on the LE, GAP and INTER columns (read from the Vina output) are off. A ligand lacking
+        # such a value (no second pose, no INTER) is dropped by an active filter.
+        self.sp_result_le = QDoubleSpinBox(); self.sp_result_le.setRange(0.0, 10.0); self.sp_result_le.setDecimals(3); self.sp_result_le.setSingleStep(0.05)
+        self.sp_result_gap = QDoubleSpinBox(); self.sp_result_gap.setRange(0.0, 100.0); self.sp_result_gap.setDecimals(3); self.sp_result_gap.setSingleStep(0.1)
+        self.sp_result_inter = QDoubleSpinBox(); self.sp_result_inter.setRange(-1000.0, 0.0); self.sp_result_inter.setDecimals(3); self.sp_result_inter.setSingleStep(0.5)
+        for attr, label_key, tip_key, spin in (
+            ("chk_result_top", "s4_chk_top", "s4_tip_top", self.sp_result_top_n),
+            ("chk_result_rmsd", "s4_chk_rmsd", "s4_tip_rmsd", self.sp_result_rmsd),
+            ("chk_result_le", "s4_chk_le", "s4_tip_le", self.sp_result_le),
+            ("chk_result_gap", "s4_chk_gap", "s4_tip_gap", self.sp_result_gap),
+            ("chk_result_inter", "s4_chk_inter", "s4_tip_inter", self.sp_result_inter),
+        ):
+            check = QCheckBox()
+            self._tr(label_key, check.setText)
+            self._tr(tip_key, check.setToolTip)
+            self._tr(tip_key, spin.setToolTip)
+            spin.setEnabled(False)
+            check.toggled.connect(spin.setEnabled)
+            setattr(self, attr, check)
+            filters_layout.addWidget(check)
+            filters_layout.addWidget(spin)
+        filters_layout.addStretch(1)
 
         controls_box = QGroupBox()
         self._tr("s4_grp_controls", controls_box.setTitle)
         controls_layout = QVBoxLayout(controls_box)
-        selectors_row = QHBoxLayout()
-        self.lbl_results_project = QLabel()
-        self.lbl_results_project.setStyleSheet("font-weight:bold;color:#29B6D8;")
+
+        # Eight buttons, two per row and all the same width; only Generate Final Report keeps the blue style
+        result_actions = [
+            ("s4_btn_refresh", self._refresh_result_selectors, True),
+            ("s4_btn_open_result_folder", self._open_current_result_folder, True),
+            ("s4_btn_load_raw_csv", self.preview_selected_result, True),
+            ("s4_btn_load_filtered", self.preview_filtered_result, True),
+            ("s4_btn_export_csv", self.export_filtered_result, True),
+            ("s4_btn_plot_filtered", self.plot_filtered_result, True),
+            ("s4_btn_redock_rmsd", self.compute_redocking_rmsd, True),
+            ("s4_btn_generate_report", self.generate_final_report, False),
+        ]
+        bold_metrics = QFontMetrics(QFont("DejaVu Sans", 10, QFont.Bold))
+        result_button_width = max(
+            bold_metrics.horizontalAdvance(i18n.t(key, language)) + 2 * 16 + 2 + 4
+            for key, _handler, _gray in result_actions for language in ("en", "pt")
+        )
+        content_width = 2 * result_button_width + 12          # what the two button columns span
+
+        # Everything in Result controls shares that span (and is centred as one block), so the Projects box
+        # starts where the Refresh button does and the Targets box ends where Open result folder does.
+        content = QWidget()
+        content.setFixedWidth(content_width)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
+
+        self.cb_results_project = QComboBox()
+        self.cb_results_project.activated.connect(self._open_project_from_results)
         self.cb_results_target = QComboBox()
-        self.cb_results_target.setMaximumWidth(260)
         self.cb_results_databank = QComboBox()
-        self.cb_results_databank.setMaximumWidth(260)
-        btn_refresh = QPushButton()
-        self._tr("s4_btn_refresh", btn_refresh.setText)
-        btn_refresh.setFixedWidth(255)
-        btn_refresh.clicked.connect(self._refresh_result_selectors)
-        btn_open = QPushButton()
-        self._tr("s4_btn_open_result_folder", btn_open.setText)
-        btn_open.setFixedWidth(255)
-        btn_open.clicked.connect(self._open_current_result_folder)
-        btn_load = QPushButton()
-        self._tr("s4_btn_load_raw_csv", btn_load.setText)
-        btn_load.setFixedWidth(255)
-        btn_load.clicked.connect(self.preview_selected_result)
-        btn_filtered = QPushButton()
-        self._tr("s4_btn_load_filtered", btn_filtered.setText)
-        btn_filtered.setFixedWidth(255)
-        btn_filtered.clicked.connect(self.preview_filtered_result)
-        btn_export = QPushButton()
-        self._tr("s4_btn_export_csv", btn_export.setText)
-        btn_export.setFixedWidth(255)
-        btn_export.clicked.connect(self.export_filtered_result)
-        btn_plot = QPushButton()
-        self._tr("s4_btn_plot_filtered", btn_plot.setText)
-        btn_plot.setFixedWidth(255)
-        btn_plot.clicked.connect(self.plot_filtered_result)
-        selectors_row.addStretch(1)
-        selectors_row.addWidget(self.lbl_results_project)
-        selectors_row.addWidget(self.cb_results_target)
-        selectors_row.addWidget(self.cb_results_databank)
-        selectors_row.addStretch(1)
-        controls_layout.addLayout(selectors_row)
+        # Projects first, on a whole line (its names are the longest); below it Targets (1/4 of the width,
+        # at the left) and Ligands (the other 3/4, at the right)
+        selectors = QGridLayout()
+        selectors.setHorizontalSpacing(12)
+        selectors.setVerticalSpacing(2)
+        selectors.setColumnStretch(0, 1)
+        selectors.setColumnStretch(1, 3)
+        caption = QLabel(); self._tr("s4_lbl_projects", caption.setText)
+        selectors.addWidget(caption, 0, 0, 1, 2)
+        selectors.addWidget(self.cb_results_project, 1, 0, 1, 2)
+        for column, (label_key, combo) in enumerate((("s4_lbl_targets", self.cb_results_target), ("s4_lbl_ligands", self.cb_results_databank))):
+            caption = QLabel(); self._tr(label_key, caption.setText)
+            selectors.addWidget(caption, 2, column)
+            selectors.addWidget(combo, 3, column)
+        content_layout.addLayout(selectors)
 
         buttons_grid = QGridLayout()
         buttons_grid.setHorizontalSpacing(12)
         buttons_grid.setVerticalSpacing(10)
-        buttons_grid.setAlignment(Qt.AlignCenter)
-        btn_redock = QPushButton()
-        self._tr("s4_btn_redock_rmsd", btn_redock.setText)
-        self._tr("s4_tooltip_redock_rmsd", btn_redock.setToolTip)
-        btn_redock.setFixedWidth(255)
-        btn_redock.clicked.connect(self.compute_redocking_rmsd)
-        result_buttons = [
-            btn_refresh,
-            btn_open,
-            btn_load,
-            btn_filtered,
-            btn_export,
-            btn_plot,
-            btn_redock,
-        ]
-        for idx, button in enumerate(result_buttons):
-            buttons_grid.addWidget(button, idx // 3, idx % 3)
-        controls_layout.addLayout(buttons_grid)
-        add_centered_group(controls_box)
+        for idx, (key, handler, gray) in enumerate(result_actions):
+            button = QPushButton()
+            self._tr(key, button.setText)
+            if gray:
+                button.setStyleSheet(_SS_BTN_SECONDARY)
+            button.setProperty("uniform_width", True)
+            button.setFixedWidth(result_button_width)
+            button.clicked.connect(handler)
+            if key == "s4_btn_redock_rmsd":
+                self._tr("s4_tooltip_redock_rmsd", button.setToolTip)
+            buttons_grid.addWidget(button, idx // 2, idx % 2)
+        content_layout.addSpacing(4)
+        content_layout.addLayout(buttons_grid)
+        controls_layout.addWidget(content, 0, Qt.AlignHCenter)
+        controls_layout.addStretch(1)
+
+        results_row = QHBoxLayout()
+        results_row.setSpacing(14)
+        results_row.addWidget(filters_box, 0)
+        results_row.addWidget(controls_box, 1)
+        results_wrap = QWidget(); results_wrap.setLayout(results_row)
+        add_centered_group(results_wrap)
 
         self.tbl_results = QTableWidget()
         self.tbl_results.setFixedHeight(500)
         add_centered_group(self.tbl_results)
-
-        btn_report = QPushButton()
-        self._tr("s4_btn_generate_report", btn_report.setText)
-        btn_report.setFixedWidth(255)
-        btn_report.clicked.connect(self.generate_final_report)
-        layout.addWidget(btn_report, alignment=Qt.AlignCenter)
 
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(4, None))
         step5_tab_index = self.tabs.addTab(tab, "")
         self._tr("tab_step4", lambda txt, i=step5_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_result_selectors()
+        self._refresh_results_project_combo()
 
     def _path_row(self, editor: QLineEdit, callback) -> QWidget:
         widget = QWidget()
@@ -3874,7 +4302,7 @@ class MainWindow(QMainWindow):
         )
 
     def _load_opencl_choices(self) -> None:
-        if not hasattr(self, "cb_opencl_platform") or not hasattr(self, "cb_opencl_device"):
+        if not hasattr(self, "cb_opencl_platform") or not hasattr(self, "lst_opencl_devices"):
             return
         devices = detect_opencl_devices()
         gpu_devices = [device for device in devices if "GPU" in str(device.get("device_type", "")).upper()]
@@ -3888,19 +4316,15 @@ class MainWindow(QMainWindow):
         self.cb_opencl_platform.clear()
         if not self._opencl_platform_map:
             self.cb_opencl_platform.addItem("No OpenCL devices detected", -1)
-            self.cb_opencl_device.clear()
-            self.cb_opencl_device.addItem("No OpenCL devices detected", -1)
             self.cb_opencl_platform.setEnabled(False)
-            self.cb_opencl_device.setEnabled(False)
             self.cb_opencl_platform.blockSignals(False)
+            self._update_opencl_device_choices()
             return
 
         self.cb_opencl_platform.setEnabled(True)
-        self.cb_opencl_device.setEnabled(True)
         sorted_platform_ids = sorted(self._opencl_platform_map)
         best_device = max(self._opencl_devices, key=self._opencl_device_score)
         self._default_opencl_platform_id = int(best_device.get("platform_id", -1))
-        self._default_opencl_device_id = int(best_device.get("device_id", -1))
         for platform_id in sorted_platform_ids:
             platform_name = self._opencl_platform_map[platform_id][0].get("platform_name", f"Platform {platform_id}")
             self.cb_opencl_platform.addItem(f"P{platform_id}: {platform_name}", platform_id)
@@ -3911,33 +4335,62 @@ class MainWindow(QMainWindow):
         self._update_opencl_device_choices()
 
     def _update_opencl_device_choices(self) -> None:
-        if not hasattr(self, "cb_opencl_platform") or not hasattr(self, "cb_opencl_device"):
+        """Fill the device list with the GPUs of the selected platform, ticking the ones saved in the settings
+        (or, when none of them is here, the best GPU)."""
+        if not hasattr(self, "cb_opencl_platform") or not hasattr(self, "lst_opencl_devices"):
             return
         platform_id = self.cb_opencl_platform.currentData()
         devices = list(self._opencl_platform_map.get(int(platform_id), [])) if hasattr(self, "_opencl_platform_map") and platform_id is not None else []
-        self.cb_opencl_device.blockSignals(True)
-        self.cb_opencl_device.clear()
+        self.lst_opencl_devices.blockSignals(True)
+        self.lst_opencl_devices.clear()
         if not devices:
-            self.cb_opencl_device.addItem("No OpenCL devices detected", -1)
-            self.cb_opencl_device.setEnabled(False)
-            self.cb_opencl_device.blockSignals(False)
+            placeholder = QListWidgetItem("No OpenCL devices detected")
+            placeholder.setFlags(Qt.NoItemFlags)
+            self.lst_opencl_devices.addItem(placeholder)
+            self.lst_opencl_devices.setEnabled(False)
+            self._fit_opencl_device_list(1)
+            self.lst_opencl_devices.blockSignals(False)
             return
 
-        self.cb_opencl_device.setEnabled(True)
+        self.lst_opencl_devices.setEnabled(True)
+        best_id = int(max(devices, key=self._opencl_device_score).get("device_id", -1))
+        saved = set(self.settings.opencl_device_ids) & {int(device.get("device_id", -1)) for device in devices}
+        ticked = saved or {best_id}
         for device in devices:
             memory_bytes = int(device.get("memory_bytes", 0))
             memory_gb = memory_bytes / 1073741824 if memory_bytes else 0.0
-            label = (
-                f"D{device['device_id']}: {device['device_name']} "
+            device_id = int(device.get("device_id", -1))
+            item = QListWidgetItem(
+                f"D{device_id}: {device['device_name']} "
                 f"[{device.get('device_type', 'Unknown')}, {memory_gb:.1f} GB, "
                 f"{int(device.get('compute_units', 0))} CU, {int(device.get('clock_mhz', 0))} MHz]"
             )
-            self.cb_opencl_device.addItem(label, int(device.get("device_id", -1)))
-        best_device = max(devices, key=self._opencl_device_score)
-        preferred_device_id = self.settings.opencl_device_id if any(int(device.get("device_id", -1)) == self.settings.opencl_device_id for device in devices) else int(best_device.get("device_id", -1))
-        index = self.cb_opencl_device.findData(preferred_device_id)
-        self.cb_opencl_device.setCurrentIndex(index if index >= 0 else 0)
-        self.cb_opencl_device.blockSignals(False)
+            item.setToolTip(item.text())
+            item.setData(Qt.UserRole, device_id)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if device_id in ticked else Qt.Unchecked)
+            self.lst_opencl_devices.addItem(item)
+        self._fit_opencl_device_list(len(devices))
+        self.lst_opencl_devices.blockSignals(False)
+
+    def _fit_opencl_device_list(self, rows: int) -> None:
+        """Height of the device list: one line per GPU, up to six (then it scrolls)."""
+        row_height = self.lst_opencl_devices.sizeHintForRow(0) if self.lst_opencl_devices.count() else 22
+        self.lst_opencl_devices.setFixedHeight(min(max(rows, 1), 6) * max(row_height, 22) + 2 * self.lst_opencl_devices.frameWidth() + 4)
+
+    def _on_opencl_device_toggled(self, item: QListWidgetItem) -> None:
+        """At least one GPU stays ticked: unticking the last one puts its tick back."""
+        if self.lst_opencl_devices.isEnabled() and not self._ticked_opencl_devices():
+            self.lst_opencl_devices.blockSignals(True)
+            item.setCheckState(Qt.Checked)
+            self.lst_opencl_devices.blockSignals(False)
+
+    def _ticked_opencl_devices(self) -> list[int]:
+        return [
+            int(self.lst_opencl_devices.item(row).data(Qt.UserRole))
+            for row in range(self.lst_opencl_devices.count())
+            if self.lst_opencl_devices.item(row).checkState() == Qt.Checked and self.lst_opencl_devices.item(row).data(Qt.UserRole) is not None
+        ]
 
     # (i18n key of the stage, counter) - the Monitor table of STEP 1, in this order.
     _LIGAND_MONITOR_ROWS = (
@@ -4095,16 +4548,26 @@ class MainWindow(QMainWindow):
                 check.setChecked(self.ligand_settings.druggability_enabled.get(key, True))
 
     def _collect_result_settings_from_widgets(self) -> None:
-        if hasattr(self, "sp_result_top_n"):
-            self.result_view_settings.top_results = self.sp_result_top_n.value()
-        if hasattr(self, "sp_result_rmsd"):
-            self.result_view_settings.rmsd_limit = self.sp_result_rmsd.value()
+        if hasattr(self, "chk_result_top"):
+            view = self.result_view_settings
+            view.top_enabled, view.top_results = self.chk_result_top.isChecked(), self.sp_result_top_n.value()
+            view.rmsd_enabled, view.rmsd_limit = self.chk_result_rmsd.isChecked(), self.sp_result_rmsd.value()
+        if hasattr(self, "chk_result_le"):
+            view = self.result_view_settings
+            view.le_enabled, view.le_min = self.chk_result_le.isChecked(), self.sp_result_le.value()
+            view.gap_enabled, view.gap_min = self.chk_result_gap.isChecked(), self.sp_result_gap.value()
+            view.inter_enabled, view.inter_max = self.chk_result_inter.isChecked(), self.sp_result_inter.value()
 
     def _apply_result_settings_to_widgets(self) -> None:
-        if hasattr(self, "sp_result_top_n"):
-            self.sp_result_top_n.setValue(self.result_view_settings.top_results)
-        if hasattr(self, "sp_result_rmsd"):
-            self.sp_result_rmsd.setValue(self.result_view_settings.rmsd_limit)
+        if hasattr(self, "chk_result_top"):
+            view = self.result_view_settings
+            self.chk_result_top.setChecked(view.top_enabled); self.sp_result_top_n.setValue(view.top_results)
+            self.chk_result_rmsd.setChecked(view.rmsd_enabled); self.sp_result_rmsd.setValue(view.rmsd_limit)
+        if hasattr(self, "chk_result_le"):
+            view = self.result_view_settings
+            self.chk_result_le.setChecked(view.le_enabled); self.sp_result_le.setValue(view.le_min)
+            self.chk_result_gap.setChecked(view.gap_enabled); self.sp_result_gap.setValue(view.gap_min)
+            self.chk_result_inter.setChecked(view.inter_enabled); self.sp_result_inter.setValue(view.inter_max)
 
     def _run_ligand_tool(self, operation: str, sources: Optional[list[str]] = None) -> None:
         if not self._require_project():
@@ -4123,11 +4586,59 @@ class MainWindow(QMainWindow):
             sources=sources,
         )
         self.ligand_worker.progress_value.connect(self.pb_ligand.setValue)
+        self.ligand_worker.progress_value.connect(self._on_ligand_progress)
         self.ligand_worker.progress_text.connect(self.txt_ligand_log.appendPlainText)
         self.ligand_worker.finished_ok.connect(self._on_ligand_tool_finished)
         self.ligand_worker.failed.connect(self._on_ligand_tool_failed)
+        self.ligand_worker.cancelled.connect(self._on_ligand_tool_cancelled)
+        self.btn_lig_cancel.setEnabled(True)
+        self._lig_run_started = time.monotonic()
+        self._lig_progress = 0
+        self.ligand_clock_timer.start()
+        self._tick_ligand_clock()
         self.ligand_worker.start()
         self.ligand_monitor_timer.start()
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = max(0, int(round(seconds)))
+        return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+    def _on_ligand_progress(self, percent: int) -> None:
+        self._lig_progress = percent
+
+    def _tick_ligand_clock(self) -> None:
+        """Refresh Running time (all the actions of the project, the running one included) and, from the progress
+        of the running action, ETA (time left) and Estim. completion (clock time it should end)."""
+        if self._lig_run_started is None:
+            return
+        elapsed = time.monotonic() - self._lig_run_started
+        self.lbl_lig_running.setText(self._format_duration(self._lig_elapsed_total + elapsed))
+        if self._lig_progress > 0:
+            remaining = elapsed * (100 - self._lig_progress) / self._lig_progress
+            self.lbl_lig_eta.setText(self._format_duration(remaining))
+            self.lbl_lig_completion.setText((datetime.now() + timedelta(seconds=remaining)).strftime("%Y-%m-%d %H:%M:%S"))
+
+    def _stop_ligand_clock(self, succeeded: bool) -> None:
+        """The action ended: add its time to Running time and keep the values on screen (they are not zeroed)."""
+        if self._lig_run_started is None:
+            return
+        self._lig_elapsed_total += time.monotonic() - self._lig_run_started
+        self.lbl_lig_running.setText(self._format_duration(self._lig_elapsed_total))
+        self._lig_run_started = None
+        self.ligand_clock_timer.stop()
+        if succeeded:
+            self.lbl_lig_eta.setText(self._format_duration(0))
+            self.lbl_lig_completion.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))      # when it actually ended
+
+    def _reset_ligand_clock(self) -> None:
+        """A different project: its clocks start from zero."""
+        self.ligand_clock_timer.stop()
+        self._lig_run_started = None
+        self._lig_elapsed_total = 0.0
+        self._lig_progress = 0
+        for label in (self.lbl_lig_eta, self.lbl_lig_running, self.lbl_lig_completion):
+            label.setText("-")
 
     def _log_ligand_action(self, conversion_dir: str, operation: str) -> None:
         """Append a record of a successfully completed Step 1 action, so the Final Report
@@ -4139,18 +4650,36 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
 
+    def _cancel_ligand_tool(self) -> None:
+        worker = getattr(self, "ligand_worker", None)
+        if worker is not None and worker.isRunning():
+            self.btn_lig_cancel.setEnabled(False)
+            self.txt_ligand_log.appendPlainText(self._t("msg_cancelling"))
+            worker.request_cancel()
+
+    def _on_ligand_tool_cancelled(self, message: str) -> None:
+        self.btn_lig_cancel.setEnabled(False)
+        self.ligand_monitor_timer.stop()
+        self._stop_ligand_clock(False)
+        self._refresh_ligand_monitor()
+        self.txt_ligand_log.appendPlainText(message)
+
     def _on_ligand_tool_finished(self, message: str) -> None:
+        self.btn_lig_cancel.setEnabled(False)
         self.pb_ligand.setValue(100)
         self.txt_ligand_log.appendPlainText(message)
         # importing is not one of the conversion actions the Final Report lists
         if getattr(self, "_ligand_tool_operation", "import_ligands") != "import_ligands" and hasattr(self, "_ligand_tool_conversion_dir"):
             self._log_ligand_action(self._ligand_tool_conversion_dir, self._ligand_tool_operation)
         self.ligand_monitor_timer.stop()
+        self._stop_ligand_clock(True)
         self._refresh_ligand_monitor()
         QMessageBox.information(self, APP_NAME, message)
 
     def _on_ligand_tool_failed(self, message: str) -> None:
+        self.btn_lig_cancel.setEnabled(False)
         self.ligand_monitor_timer.stop()
+        self._stop_ligand_clock(False)
         self._refresh_ligand_monitor()
         self.txt_ligand_log.appendPlainText(message)
         QMessageBox.critical(self, APP_NAME, message)
@@ -4327,8 +4856,9 @@ class MainWindow(QMainWindow):
 
     def _sync_grid_methods(self, method: str, checked: bool) -> None:
         """Only the ticked grid method keeps its fields enabled; all the checkboxes stay clickable."""
-        for check, body in self._grid_options.values():
-            body.setEnabled(check.isChecked())
+        for check, widgets in self._grid_options.values():
+            for widget in widgets:
+                widget.setEnabled(check.isChecked())
         if checked and method == "cocrystal" and self.cb_cocrystal_ligand.currentIndex() >= 0:
             self._apply_cocrystal_grid()
 
@@ -4651,9 +5181,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "cb_opencl_platform"):
             platform_id = self.cb_opencl_platform.currentData()
             self.settings.opencl_platform_id = int(platform_id) if platform_id is not None else -1
-        if hasattr(self, "cb_opencl_device"):
-            device_id = self.cb_opencl_device.currentData()
-            self.settings.opencl_device_id = int(device_id) if device_id is not None else -1
+        if hasattr(self, "lst_opencl_devices"):
+            self.settings.opencl_device_ids = self._ticked_opencl_devices()
         self.settings.split_results = self.cb_split.currentText().strip() == "yes"
         self.settings.cpu_threads = self.sp_cpu_threads.value()
         self.settings.exhaustiveness = self.sp_exhaustiveness.value()
@@ -4711,10 +5240,6 @@ class MainWindow(QMainWindow):
             if index >= 0:
                 self.cb_opencl_platform.setCurrentIndex(index)
                 self._update_opencl_device_choices()
-        if hasattr(self, "cb_opencl_device"):
-            index = self.cb_opencl_device.findData(self.settings.opencl_device_id)
-            if index >= 0:
-                self.cb_opencl_device.setCurrentIndex(index)
         if hasattr(self, "cb_split"):
             self.cb_split.setCurrentText("yes" if self.settings.split_results else "no")
         if hasattr(self, "sp_cpu_threads"):
@@ -4797,6 +5322,8 @@ class MainWindow(QMainWindow):
         docking = self._read_json(self.project.docking_settings_path)
         target = self._read_json(self.project.target_settings_path)
         results_view = self._read_json(self.project.results_settings_path)
+        if "opencl_device_ids" not in docking and docking.get("opencl_device_id", -1) >= 0:
+            docking["opencl_device_ids"] = [docking["opencl_device_id"]]       # a project saved with the single-device setting
         self.settings = DockingSettings(**{**asdict(self.settings), **_known_dataclass_kwargs(DockingSettings, docking)})
         self.ligand_settings = LigandSettings(**{**asdict(self.ligand_settings), **_known_dataclass_kwargs(LigandSettings, ligand)})
         if "ligand_sources" not in ligand:
@@ -4868,8 +5395,11 @@ class MainWindow(QMainWindow):
     _MONITOR_PERCENT_RE = re.compile(r"^([\d.]+)%")
 
     def _refresh_docking_monitor(self) -> None:
-        if self.cb_processing_type.currentText().strip() != "GPU":
-            self._reset_docking_monitor()
+        worker = getattr(self, "worker", None)
+        if worker is None:
+            return
+        if not worker.uses_vina_progress_file:
+            self._refresh_docking_monitor_from_worker(worker)
             return
         log_path = self._docking_monitor_path()
         try:
@@ -4894,6 +5424,26 @@ class MainWindow(QMainWindow):
         if percent_value is not None and hasattr(self, "worker") and self.worker.isRunning():
             self.pb_docking.setValue(max(0, min(100, int(round(percent_value)))))
 
+    def _refresh_docking_monitor_from_worker(self, worker: "DockingWorker") -> None:
+        """The monitor for a run without a Vina progress file (Vina 1.2.5 on the CPU, or several GPUs at once): the
+        counts come from the worker, which tallies each ligand (CPU) or each ligand group (GPU) as it ends; ETA and
+        Estim. completion extrapolate the pace of this run so far."""
+        if worker.started_at is None:
+            return
+        elapsed = (worker.finished_at or time.monotonic()) - worker.started_at
+        done, total = worker.jobs_done, worker.jobs_total
+        self.lbl_monitor_docked.setText(str(done))
+        self.lbl_monitor_total.setText(str(total))
+        self.lbl_monitor_percent.setText(f"{100 * done / total:.1f}%" if total else "-")
+        self.lbl_monitor_running_time.setText(self._format_duration(elapsed))
+        if worker.finished_at is not None:
+            self.lbl_monitor_eta.setText(self._format_duration(0))
+            self.lbl_monitor_completion.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        elif done:
+            remaining = elapsed * (total - done) / done
+            self.lbl_monitor_eta.setText(self._format_duration(remaining))
+            self.lbl_monitor_completion.setText((datetime.now() + timedelta(seconds=remaining)).strftime("%Y-%m-%d %H:%M:%S"))
+
     def run_docking(self) -> None:
         if not self._require_project():
             return
@@ -4916,19 +5466,39 @@ class MainWindow(QMainWindow):
         self.worker.progress_text.connect(self.txt_docking_log.appendPlainText)
         self.worker.finished_ok.connect(self._on_docking_finished)
         self.worker.failed.connect(self._on_docking_failed)
+        self.worker.cancelled.connect(self._on_docking_cancelled)
+        self.btn_docking_cancel.setEnabled(True)
         self.worker.start()
         interval_seconds = self.cb_monitor_interval.currentData() or 5
         self.monitor_timer.start(int(interval_seconds) * 1000)
 
-    def _on_docking_finished(self, message: str) -> None:
+    def _cancel_docking(self) -> None:
+        worker = getattr(self, "worker", None)
+        if worker is not None and worker.isRunning():
+            self.btn_docking_cancel.setEnabled(False)
+            self.txt_docking_log.appendPlainText(self._t("msg_cancelling"))
+            worker.request_cancel()
+
+    def _on_docking_cancelled(self, message: str) -> None:
+        self.btn_docking_cancel.setEnabled(False)
         self.monitor_timer.stop()
+        self._refresh_docking_monitor()
+        self.txt_docking_log.appendPlainText(message)
+        self._refresh_result_selectors()
+
+    def _on_docking_finished(self, message: str) -> None:
+        self.btn_docking_cancel.setEnabled(False)
+        self.monitor_timer.stop()
+        self._refresh_docking_monitor()
         self.pb_docking.setValue(100)
         self.txt_docking_log.appendPlainText(message)
         self._refresh_result_selectors()
         QMessageBox.information(self, APP_NAME, message)
 
     def _on_docking_failed(self, message: str) -> None:
+        self.btn_docking_cancel.setEnabled(False)
         self.monitor_timer.stop()
+        self._refresh_docking_monitor()
         self.txt_docking_log.appendPlainText(message)
         QMessageBox.critical(self, APP_NAME, message)
 
@@ -4961,7 +5531,11 @@ class MainWindow(QMainWindow):
             return
         self._load_frame_into_table(frame)
         self.txt_docking_log.appendPlainText(
-            f"Loaded filtered results for {result_name}/{target_name}: top {self.result_view_settings.top_results}, RMSD < {self.result_view_settings.rmsd_limit}."
+            f"Loaded filtered results for {result_name}/{target_name}"
+            + (f": top {self._top_results_limit()}" if self._top_results_limit() is not None else "")
+            + (f", RMSD < {self._rmsd_limit()}" if self._rmsd_limit() is not None else "")
+            + "".join(f", {name} {value}" for name, value in self._quality_filters().items())
+            + "."
         )
 
     def export_filtered_result(self) -> None:
@@ -4971,7 +5545,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
         target_slug = self._safe_target_name(target_name)
-        default_name = os.path.join(self.docking_dir, f"{target_slug}_top{self.result_view_settings.top_results}.csv")
+        default_name = os.path.join(self.docking_dir, f"{target_slug}_{self._top_tag()}.csv")
         save_path, _ = QFileDialog.getSaveFileName(self, "Export filtered result", default_name, "CSV (*.csv)")
         if not save_path:
             return
@@ -5041,7 +5615,7 @@ class MainWindow(QMainWindow):
 
     def _save_result_plot(self, fig: Any, result_name: str, target_name: str, parent: QWidget) -> None:
         target_slug = self._safe_target_name(target_name)
-        default_path = os.path.join(self.docking_dir, f"{target_slug}_top{self.result_view_settings.top_results}.png")
+        default_path = os.path.join(self.docking_dir, f"{target_slug}_{self._top_tag()}.png")
         file_path, _ = QFileDialog.getSaveFileName(parent, "Save chart", default_path, "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)")
         if not file_path:
             return
@@ -5161,8 +5735,9 @@ class MainWindow(QMainWindow):
                 frame=frame,
                 docking_settings=docking_settings,
                 ligand_settings=ligand_settings,
-                top_results=self.result_view_settings.top_results,
-                rmsd_limit=self.result_view_settings.rmsd_limit,
+                top_results=self._top_results_limit(),
+                rmsd_limit=self._rmsd_limit(),
+                quality_filters=self._quality_filters(),
             )
         except Exception as exc:
             QApplication.restoreOverrideCursor()
@@ -5189,8 +5764,7 @@ class MainWindow(QMainWindow):
                         output_file = ligand_dir / f"{ligand_name}.pdbqt"
                         if not output_file.is_file():
                             continue
-                        energy, rmsd_mean, smiles = _parse_vina_pose_data(str(output_file))
-                        writer.writerow([ligand_name, smiles, ligand_group, target_name, energy, rmsd_mean])
+                        writer.writerow(_result_csv_row(ligand_name, ligand_group, target_name, str(output_file)))
         return csv_path
 
     def _locate_result_columns(self, frame: Any) -> dict[str, Optional[str]]:
@@ -5229,6 +5803,33 @@ class MainWindow(QMainWindow):
             return frame
         return frame[frame[databank_col] == databank_name].reset_index(drop=True)
 
+    def _top_results_limit(self) -> Optional[int]:
+        """How many hits to keep, None while the Top ligands filter is off."""
+        view = self.result_view_settings
+        return view.top_results if view.top_enabled else None
+
+    def _rmsd_limit(self) -> Optional[float]:
+        """The mean-RMSD ceiling, None while the RMSD threshold filter is off."""
+        view = self.result_view_settings
+        return view.rmsd_limit if view.rmsd_enabled else None
+
+    def _top_tag(self) -> str:
+        """For file names: 'top20' or, with the Top ligands filter off, 'filtered'."""
+        top = self._top_results_limit()
+        return f"top{top}" if top is not None else "filtered"
+
+    def _quality_filters(self) -> dict[str, float]:
+        """The enabled extra filters of Result filters, as the keyword arguments of apply_quality_filters."""
+        view = self.result_view_settings
+        filters: dict[str, float] = {}
+        if view.le_enabled:
+            filters["le_min"] = view.le_min
+        if view.gap_enabled:
+            filters["gap_min"] = view.gap_min
+        if view.inter_enabled:
+            filters["inter_max"] = view.inter_max
+        return filters
+
     def _build_filtered_result_frame(self) -> tuple[Any, str, str]:
         self._collect_result_settings_from_widgets()
         result_name = self.project.name
@@ -5249,8 +5850,12 @@ class MainWindow(QMainWindow):
         filtered = frame.copy()
         filtered[energy_col] = pd.to_numeric(filtered[energy_col], errors="coerce")
         filtered[rmsd_col] = pd.to_numeric(filtered[rmsd_col], errors="coerce")
-        filtered = filtered[filtered[rmsd_col] < self.result_view_settings.rmsd_limit]
-        filtered = filtered.sort_values(by=energy_col, ascending=True).head(self.result_view_settings.top_results)
+        if self._rmsd_limit() is not None:
+            filtered = filtered[filtered[rmsd_col] < self._rmsd_limit()]
+        filtered = apply_quality_filters(filtered, **self._quality_filters())
+        filtered = filtered.sort_values(by=energy_col, ascending=True)
+        if self._top_results_limit() is not None:
+            filtered = filtered.head(self._top_results_limit())
         filtered = filtered.reset_index(drop=True)
         filtered = self._add_compound_name_column(filtered, result_name)
         return filtered, result_name, target_name

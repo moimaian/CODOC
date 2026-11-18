@@ -100,6 +100,16 @@ _TEXTOS = {
     # ---------------------------------------------------------------- Shared nav buttons
     "btn_back": {"en": " << BACK ", "pt": " << VOLTAR "},
     "btn_next": {"en": " NEXT >> ", "pt": " AVANÇAR >> "},
+    "btn_cancel": {"en": "Cancel", "pt": "Cancelar"},
+    "msg_cancelling": {"en": "Cancelling... waiting for the current step to stop.", "pt": "Cancelando... aguardando a etapa em andamento parar."},
+    "s1_tip_cancel": {
+        "en": "Stops the action in course at the next file or ligand. What was already done is kept, and the action can be run again to continue.",
+        "pt": "Interrompe a ação em andamento no próximo arquivo ou ligante. O que já foi feito é mantido, e a ação pode ser executada de novo para continuar.",
+    },
+    "s3_tip_cancel": {
+        "en": "Stops the docking: the Vina processes in course are terminated. The ligands already docked are kept; Run docking continues from where it stopped.",
+        "pt": "Interrompe o docking: os processos do Vina em andamento são encerrados. Os ligantes já docados são mantidos; Executar docking continua de onde parou.",
+    },
     "btn_browse": {"en": "Browse", "pt": "Procurar"},
 
     # ---------------------------------------------------------------- HOME tab
@@ -176,7 +186,11 @@ _TEXTOS = {
     "cfg_lbl_cpu_threads": {"en": "CPU threads:", "pt": "Threads de CPU:"},
     "cfg_lbl_gpu_threads": {"en": "GPU threads:", "pt": "Threads de GPU:"},
     "cfg_lbl_opencl_platform": {"en": "OpenCL platform:", "pt": "Plataforma OpenCL:"},
-    "cfg_lbl_opencl_device": {"en": "OpenCL device:", "pt": "Dispositivo OpenCL:"},
+    "cfg_tip_opencl_devices": {
+        "en": "GPUs of the selected platform that run the GPU docking. With more than one ticked, the ligand groups (each folder of CONVERSION/LIGANDS, against each target) are spread over them: every GPU runs its own Vina-GPU and takes the next pending group, so they work at the same time. One group is never split, so use a smaller 'Max ligands/folder' in STEP 1 (or several targets) to keep all the GPUs busy. All the GPUs must be able to run the same compiled Vina-GPU kernels (same vendor and architecture).",
+        "pt": "GPUs da plataforma selecionada que executam o docking em GPU. Com mais de uma marcada, os grupos de ligantes (cada pasta de CONVERSION/LIGANDS, contra cada alvo) são distribuídos entre elas: cada GPU roda o seu próprio Vina-GPU e pega o próximo grupo pendente, então trabalham ao mesmo tempo. Um grupo nunca é dividido, por isso use um 'Máx. de ligantes/pasta' menor na ETAPA 1 (ou vários alvos) para manter todas as GPUs ocupadas. Todas as GPUs precisam rodar os mesmos kernels compilados do Vina-GPU (mesmo fabricante e arquitetura).",
+    },
+    "cfg_lbl_opencl_device": {"en": "OpenCL devices:", "pt": "Dispositivos OpenCL:"},
     "cfg_btn_save_settings": {"en": "Save settings", "pt": "Salvar configurações"},
     "cfg_btn_reload_settings": {"en": "Reload settings", "pt": "Recarregar configurações"},
 
@@ -226,6 +240,14 @@ _TEXTOS = {
     "s1_mon_recovered": {"en": "Recovered", "pt": "Recuperados"},
     "s1_btn_open_ligands_folder": {"en": "Open ligands folder", "pt": "Abrir pasta de ligantes"},
     "s1_btn_save_lig_settings": {"en": "Save ligand settings", "pt": "Salvar configurações de ligantes"},
+    "s1_tip_eta": {
+        "en": "ETA (estimated time of arrival): the time left for the action in course, estimated from its progress so far.",
+        "pt": "ETA (tempo estimado de chegada): o tempo que falta para a ação em andamento, estimado pelo progresso até agora.",
+    },
+    "s1_tip_completion": {
+        "en": "Estimated completion: the date and time the action in course should end. When it ends, the moment it actually ended. Running time adds up all the actions of the project and is not zeroed between them.",
+        "pt": "Conclusão estimada: a data e a hora em que a ação em andamento deve terminar. Quando ela termina, o momento em que de fato terminou. O tempo de execução soma todas as ações do projeto e não é zerado entre elas.",
+    },
     "s1_act_split_multimodel": {"en": "Split multimodel files", "pt": "Dividir arquivos multimodelo"},
     "s1_act_split_large_folders": {"en": "Split large folders", "pt": "Dividir pastas grandes"},
     "s1_act_generate_lipinski": {"en": "Generate SMI/CSV + Lipinski", "pt": "Gerar SMI/CSV + Lipinski"},
@@ -328,11 +350,36 @@ _TEXTOS = {
     "s3_btn_run_docking": {"en": "Run docking", "pt": "Executar docking"},
 
     # ---------------------------------------------------------------- STEP 4 (View Results)
-    "s4_lbl_project": {"en": "Project: {name}", "pt": "Projeto: {name}"},
+    "s4_lbl_projects": {"en": "Projects:", "pt": "Projetos:"},
+    "s4_lbl_targets": {"en": "Targets:", "pt": "Alvos:"},
+    "s4_lbl_ligands": {"en": "Ligands:", "pt": "Ligantes:"},
+    "s4_chk_top": {"en": "Top ligands", "pt": "Melhores ligantes"},
+    "s4_chk_rmsd": {"en": "RMSD threshold", "pt": "Limiar de RMSD"},
+    "s4_tip_top": {
+        "en": "Keeps only this many ligands: the ones with the lowest binding energy (per target and ligand group in the report). Off: all the ligands that pass the other filters are kept.",
+        "pt": "Mantém só esta quantidade de ligantes: os de menor energia de ligação (por alvo e grupo de ligantes no relatório). Desligado: todos os ligantes que passam pelos outros filtros são mantidos.",
+    },
+    "s4_tip_rmsd": {
+        "en": "Keeps the ligands whose mean RMSD (of all the poses against the best one) is below this value in Angstrom: poses that converge to the same place. Off: no RMSD limit.",
+        "pt": "Mantém os ligantes cujo RMSD médio (de todas as poses em relação à melhor) é menor que este valor em Angstrom: poses que convergem para o mesmo lugar. Desligado: sem limite de RMSD.",
+    },
+    "s4_chk_le": {"en": "LE min. (kcal/mol/atom)", "pt": "LE mín. (kcal/mol/átomo)"},
+    "s4_chk_gap": {"en": "GAP min. (kcal/mol)", "pt": "GAP mín. (kcal/mol)"},
+    "s4_chk_inter": {"en": "INTER max. (kcal/mol)", "pt": "INTER máx. (kcal/mol)"},
+    "s4_tip_le": {
+        "en": "Ligand efficiency: the binding energy of the best pose divided by its number of heavy atoms (-energy / atoms). Keeps the ligands whose LE is at least this value, which removes the advantage that big molecules have in a ranking by energy. A common cut-off is 0.3.",
+        "pt": "Eficiência do ligante: a energia de ligação da melhor pose dividida pelo número de átomos pesados (-energia / átomos). Mantém os ligantes cujo LE é pelo menos este valor, o que tira a vantagem que as moléculas grandes têm num ranking por energia. Um corte comum é 0,3.",
+    },
+    "s4_tip_gap": {
+        "en": "Energy gap between the best pose and the second one (affinity of pose 2 minus affinity of pose 1). Keeps the ligands whose gap is at least this value: a large gap means a well defined binding mode. Ligands with a single pose have no gap and are dropped by this filter.",
+        "pt": "Diferença de energia entre a melhor pose e a segunda (afinidade da pose 2 menos a da pose 1). Mantém os ligantes cujo gap é pelo menos este valor: um gap grande indica um modo de ligação bem definido. Ligantes com uma única pose não têm gap e são descartados por este filtro.",
+    },
+    "s4_tip_inter": {
+        "en": "Intermolecular energy of the best pose (the interaction with the receptor, without the ligand's own strain). Keeps the ligands whose INTER is at most this value (more negative = stronger). Vina-GPU does not write it, so GPU results have no INTER and are dropped by this filter.",
+        "pt": "Energia intermolecular da melhor pose (a interação com o receptor, sem a tensão interna do ligante). Mantém os ligantes cujo INTER é no máximo este valor (mais negativo = mais forte). O Vina-GPU não grava esse valor, então resultados de GPU não têm INTER e são descartados por este filtro.",
+    },
     "s4_grp_filters": {"en": "Result filters", "pt": "Filtros de resultados"},
     "s4_grp_controls": {"en": "Result controls", "pt": "Controles de resultados"},
-    "s4_lbl_top_ligands": {"en": "Top ligands:", "pt": "Melhores ligantes:"},
-    "s4_lbl_rmsd_threshold": {"en": "RMSD threshold:", "pt": "Limiar de RMSD:"},
     "s4_btn_refresh": {"en": "Refresh", "pt": "Atualizar"},
     "s4_btn_open_result_folder": {"en": "Open result folder", "pt": "Abrir pasta de resultados"},
     "s4_btn_load_raw_csv": {"en": "Load raw CSV", "pt": "Carregar CSV bruto"},

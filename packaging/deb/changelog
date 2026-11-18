@@ -1,22 +1,28 @@
-codoc (2.0.0-1) unstable; urgency=low
+codoc (2.1.0-1) unstable; urgency=low
 
-  * Versão MAJOR: o trabalho passa a ser organizado em projetos.
-    - A pasta JOBS virou PROJECTS (renomeada automaticamente na primeira
-      execução, sem copiar nem apagar nada) e as pastas comuns LIGANDS e
-      TARGETS deixaram de existir: cada projeto guarda os seus ligantes
-      (CONVERSION/LIGANDS), alvos (TARGETS), resultados (DOCKING) e as
-      referências de redocagem (REDOCK_REFERENCE).
-    - A aba STEP 1 virou CONFIG, com os grupos Projects (criar ou retomar um
-      projeto carregando os .json de cada etapa) e Performance Options; os
-      Docking parameters ficam no STEP 3, ao lado do monitor. As etapas
-      seguintes foram renumeradas (STEP 1 a STEP 4). Run type, Result name,
-      Jobs, Ligands e Targets foram removidos do antigo STEP 1.
-    - Ligands > Browse (STEP 1) abre a pasta BASE e importa arquivos
-      multiligante e/ou pastas de ligantes, copiando-os para o projeto.
-    - CONVERSION_ORIGINALS foi eliminada: CONVERSION/LIGANDS guarda só os
-      arquivos após o split e, no fim, os .pdbqt.
-    - O docking, executado de novo no mesmo projeto, retoma pelos ligantes
-      ainda pendentes (substitui o RESTART).
+  * Versão MINOR: refinamentos da interface e funcionalidades novas sobre os
+    projetos da 2.0.0 (projetos e .json antigos continuam abrindo).
+    - HOME: novo grupo Hardware Specs - Storage (ponto de montagem, espaço,
+      dispositivo, tipo de mídia e quantos ligantes docados ainda cabem no
+      disco, estimados pelo tamanho dos resultados já gravados), mais
+      campos no Hardware Specs - GPU, PROPKA e PDB2PQR em Software Specs e
+      grupos com a mesma largura do CODEEP. O PROPKA também entra em Install
+      Requirements.
+    - CONFIG virou Project Settings: Project Identification (a data, o nome e
+      o ID do projeto aberto) e Performance Options lado a lado, com Save
+      settings e Reload settings centralizados abaixo. O CODOC sempre abre em
+      New Project (não restaura mais o último estado) e o último projeto fica
+      exibido, desabilitado, em Previous project.
+    - Os Docking parameters saíram da CONFIG e foram para a STEP 3, à esquerda
+      do Docking monitor; o Run docking ficou abaixo do monitor, centralizado.
+      O campo CPU parallelism foi removido (não tinha efeito: o docking em
+      CPU roda um ligante por vez) e o Exhaustiveness sobe de 8 em 8.
+    - Help > About Us passou a ser um item da barra, ao lado de Menu e Help, e
+      o destaque da interface passou do verde para o azul-petróleo da logo.
+      Os títulos das abas deixaram de levar "Step N.".
+    - Importar ligantes já presentes no projeto avisa o motivo; o Recover
+      failed ligands deixou de gravar arquivos vazios e a pasta RECOVERED é
+      removida quando nada é recuperado.
     - O CODOC deixou de abrir com uma janela de terminal (Terminal=false nos
       atalhos). O menu Help > Terminal abre um terminal já no venv do CODOC,
       com a saída da sessão (~/.local/state/CODOC/terminal.log) e prompt para
@@ -30,9 +36,14 @@ codoc (2.0.0-1) unstable; urgency=low
       (a busca de nome usa a forma neutralizada), e o Meeko a usa para
       sanitizar o arquivo no Reject invalid PDBQT; a checagem das linhas ATOM
       só entra quando o Meeko não consegue reconstruir a molécula.
-    - A protonação dos ligantes (RDKit/Meeko) passou a usar o estado predominante
-      no pH (Dimorphite-DL com precisão de pKa 0): antes a primeira de várias
-      variantes, em ordem que mudava a cada execução, decidia o estado.
+    - A protonação dos ligantes (RDKit/Meeko) passou a usar o estado
+      predominante no pH (Dimorphite-DL com precisão de pKa 0): antes a
+      primeira de várias variantes, em ordem que mudava a cada execução,
+      decidia o estado.
+      Cargas que o Dimorphite-DL sugere sem sentido químico são desfeitas: o N
+      protonado de amidas, carbamatos, ureias, sulfonamidas e enaminonas e o
+      N-H desprotonado de imidazol, benzimidazol, pirazol e triazol (o
+      tetrazol, que é ácido, continua aniônico).
     - STEP 1 ganhou o grupo Monitor, à direita de Ligand preparation settings:
       tabela com a quantidade de ligantes em cada etapa (Groups, Multimodels,
       Splitted, Empty, Converted, Rejected, Recovered), somada sobre todas as
@@ -50,6 +61,54 @@ codoc (2.0.0-1) unstable; urgency=low
       em Target Parameters e grava em CONVERSION/LIGANDS/REDOCKING. O modo de
       preparo (Preparation mode) virou dois checkboxes exclusivos, 1. Rigid
       Docking e 2. Flexible Docking.
+    - STEP 4: o CSV de resultados ganhou as colunas LE (eficiência do ligante),
+      GAP (pose 2 menos pose 1) e INTER (energia intermolecular), lidas do
+      arquivo de saída do Vina, e o Result filters ganhou um filtro com
+      checkbox para cada uma (aplicados também ao relatório final). Result
+      filters e Result controls ficam lado a lado; o Result controls tem as
+      listas Projects (abre o projeto escolhido), Targets e Ligands.
+    - Docking em GPU com várias GPUs: em CONFIG > Performance Options, OpenCL
+      devices virou uma lista com um checkbox por GPU da plataforma. Com mais
+      de uma marcada, cada GPU roda o seu Vina-GPU e pega o próximo grupo de
+      ligantes pendente (por alvo), em paralelo. Projetos antigos com um único
+      device continuam abrindo com essa GPU marcada.
+    - STEP 1: o grupo Ligand actions ganhou ETA, Running time e Estim.
+      completion abaixo dos botões: o tempo corrido soma todas as ações do
+      projeto (não zera entre elas) e o ETA e a conclusão estimada vêm do
+      progresso da ação em andamento.
+    - O Docking monitor (STEP 3) passou a funcionar também no docking em CPU
+      (Vina 1.2.5, que não grava arquivo de progresso) e com várias GPUs: os
+      números vêm da contagem de ligantes (CPU) ou de grupos (GPU) concluídos.
+    - Botão Cancelar (cor salmão) no grupo Ligand actions da STEP 1
+      (interrompe a ação em andamento; o que já foi convertido é mantido) e
+      ao lado do Run docking na STEP 3 (encerra o Vina/Vina-GPU; os ligantes
+      já docados ficam).
+    - Retomada do docking mais robusta: um resultado cortado por queda de
+      energia é refeito, as saídas já prontas de um grupo Vina-GPU interrompido
+      são aproveitadas e só os ligantes pendentes são enviados ao Vina-GPU.
+    - Manuais em português e inglês atualizados para esta versão.
+
+ -- Moisés Maia <moimaian@gmail.com>  Wed, 18 Nov 2026 12:00:00 -0300
+
+codoc (2.0.0-1) unstable; urgency=low
+
+  * Versão MAJOR: o trabalho passa a ser organizado em projetos.
+    - A pasta JOBS virou PROJECTS (renomeada automaticamente na primeira
+      execução, sem copiar nem apagar nada) e as pastas comuns LIGANDS e
+      TARGETS deixaram de existir: cada projeto guarda os seus ligantes
+      (CONVERSION/LIGANDS), alvos (TARGETS), resultados (DOCKING) e as
+      referências de redocagem (REDOCK_REFERENCE).
+    - A aba STEP 1 virou CONFIG, com os grupos Projects (criar ou retomar um
+      projeto carregando os .json de cada etapa), Performance Options e
+      Docking parameters; as etapas seguintes foram renumeradas (STEP 1 a
+      STEP 4). Run type, Result name, Jobs, Ligands e Targets foram removidos
+      do antigo STEP 1.
+    - Ligands > Browse (STEP 1) abre a pasta BASE e importa arquivos
+      multiligante e/ou pastas de ligantes, copiando-os para o projeto.
+    - CONVERSION_ORIGINALS foi eliminada: CONVERSION/LIGANDS guarda só os
+      arquivos após o split e, no fim, os .pdbqt.
+    - O docking, executado de novo no mesmo projeto, retoma pelos ligantes
+      ainda pendentes (substitui o RESTART).
     - Manuais em português e inglês atualizados.
 
  -- Moisés Maia <moimaian@gmail.com>  Tue, 17 Nov 2026 13:00:00 -0300

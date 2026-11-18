@@ -20,7 +20,7 @@ collapsed by clicking on its title. The complete description is in the user manu
   - TUTORIALS/user_manual.pdf               (English)
   - TUTORIALS/manual_do_usuario_CODOC.pdf   (Portuguese)
 
-The version number is in MODULES/versao.py; it is also shown in the HOME tab and in Help > About.
+The version number is in MODULES/versao.py; it is also shown in the HOME tab and in About Us.
 
 ################################################################################################################
 #                                           1. INSTALLATION                                                    #

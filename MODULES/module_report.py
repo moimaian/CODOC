@@ -45,6 +45,30 @@ try:
 except Exception:
     _DOCX_AVAILABLE = False
 
+# Extra columns of the results CSV (read from the Vina output of each ligand) and the filters over them
+LE_COLUMN = "LE (Kcal/mol/atom)"          # ligand efficiency: -affinity / heavy atoms of the best pose
+GAP_COLUMN = "GAP (Kcal/mol)"             # affinity of pose 2 minus affinity of pose 1
+INTER_COLUMN = "INTER (Kcal/mol)"         # intermolecular energy of the best pose
+
+
+def apply_quality_filters(
+    frame: Any, le_min: Optional[float] = None, gap_min: Optional[float] = None, inter_max: Optional[float] = None
+) -> Any:
+    """Keep the rows with LE >= le_min, GAP >= gap_min and INTER <= inter_max (a limit left as None is not
+    applied). A row whose value is missing - a single-pose ligand has no GAP, Vina-GPU writes no INTER -
+    cannot be checked and is dropped by an active filter."""
+    import pandas as pd
+
+    for column, limit, keep in (
+        (LE_COLUMN, le_min, lambda values, bound: values >= bound),
+        (GAP_COLUMN, gap_min, lambda values, bound: values >= bound),
+        (INTER_COLUMN, inter_max, lambda values, bound: values <= bound),
+    ):
+        if limit is not None and column in frame.columns:
+            frame = frame[keep(pd.to_numeric(frame[column], errors="coerce"), limit)]
+    return frame
+
+
 COLOR_TITLE_BAR = "BDD6EE"
 COLOR_SECTION_BAR = "DAE3F3"
 COLOR_ACCENT_BAR = "E2EFDA"
@@ -409,8 +433,9 @@ def _add_methodology(
     databank_formats: dict[str, str],
     target_names: list[str],
     total_final_ligands: int,
-    top_results: int,
-    rmsd_limit: float,
+    top_results: Optional[int],
+    rmsd_limit: Optional[float],
+    quality_filters: Optional[dict[str, float]] = None,
 ) -> None:
     _bar(document, "DESCRIPTION OF PROPOSED METHODOLOGY", COLOR_ACCENT_BAR)
     paragraph = document.add_paragraph()
@@ -479,14 +504,26 @@ def _add_methodology(
     add(f"{_fmt_num(docking.get('min_rmsd', ''))} Angstrom", True)
     add(" to generate ", False)
     add(str(docking.get("poses", "")), True)
-    add(" poses. The top ", False)
-    add(str(top_results), True)
-    add(
-        " hits were then reported in a table, ranked in decreasing order of binding energy, "
-        "with a mean RMSD below ",
-        False,
-    )
-    add(f"{_fmt_num(rmsd_limit)} Angstrom", True)
+    add(" poses. ", False)
+    if top_results is not None:
+        add("The top ", False)
+        add(str(top_results), True)
+        add(" hits were then reported in a table, ranked in decreasing order of binding energy", False)
+    else:
+        add("The hits were then reported in a table, ranked in decreasing order of binding energy", False)
+    if rmsd_limit is not None:
+        add(", with a mean RMSD below ", False)
+        add(f"{_fmt_num(rmsd_limit)} Angstrom", True)
+    extra = []
+    if quality_filters and "le_min" in quality_filters:
+        extra.append(f"a ligand efficiency of at least {_fmt_num(quality_filters['le_min'])} Kcal/mol per heavy atom")
+    if quality_filters and "gap_min" in quality_filters:
+        extra.append(f"an energy gap of at least {_fmt_num(quality_filters['gap_min'])} Kcal/mol between the two best poses")
+    if quality_filters and "inter_max" in quality_filters:
+        extra.append(f"an intermolecular energy of at most {_fmt_num(quality_filters['inter_max'])} Kcal/mol")
+    if extra:
+        add(", and ", False)
+        add("; ".join(extra), True)
     add(".", False)
 
 
@@ -501,9 +538,10 @@ def generate_final_report(
     frame: Any,
     docking_settings: dict[str, Any],
     ligand_settings: dict[str, Any],
-    top_results: int,
-    rmsd_limit: float,
+    top_results: Optional[int],
+    rmsd_limit: Optional[float],
     progress_callback: Optional[Callable[[str], None]] = None,
+    quality_filters: Optional[dict[str, float]] = None,
 ) -> str:
     """Build <job_dir>/DOCKING/<job_name>_RESULTS_REPORT.docx from the job's rebuilt results
     dataframe (LIGAND, SMILES, LIGAND DATABANK, TARGET, BINDING ENERGY (Kcal/mol), RMSD (mean)),
@@ -524,7 +562,9 @@ def generate_final_report(
     working["BINDING ENERGY (Kcal/mol)"] = pd.to_numeric(working["BINDING ENERGY (Kcal/mol)"], errors="coerce")
     working["RMSD (mean)"] = pd.to_numeric(working["RMSD (mean)"], errors="coerce")
     working = working.dropna(subset=["BINDING ENERGY (Kcal/mol)", "RMSD (mean)"])
-    working = working[working["RMSD (mean)"] < rmsd_limit]
+    if rmsd_limit is not None:
+        working = working[working["RMSD (mean)"] < rmsd_limit]
+    working = apply_quality_filters(working, **(quality_filters or {}))
 
     conversion_dir = os.path.join(job_dir, "CONVERSION")
     docking_dir = os.path.join(job_dir, "DOCKING")
@@ -558,7 +598,9 @@ def generate_final_report(
             subset = working[(working["TARGET"] == target) & (working["LIGAND DATABANK"] == databank)]
             if subset.empty:
                 continue
-            subset = subset.sort_values(by="BINDING ENERGY (Kcal/mol)", ascending=True).head(top_results)
+            subset = subset.sort_values(by="BINDING ENERGY (Kcal/mol)", ascending=True)
+            if top_results is not None:
+                subset = subset.head(top_results)
             report(f"Building table for {target} / {databank} ({len(subset)} ligand(s))...")
             records = subset.to_dict("records")
 
@@ -597,6 +639,7 @@ def generate_final_report(
         total_final_ligands,
         top_results,
         rmsd_limit,
+        quality_filters,
     )
 
     os.makedirs(docking_dir, exist_ok=True)

@@ -12,7 +12,7 @@ A `1.0.0-1` é a primeira versão numerada (até então o rodapé dizia apenas
 **Fonte única do número: [`MODULES/versao.py`](../MODULES/versao.py)** (`VERSAO =
 "..."`). É o mesmo valor que:
 - aparece no rodapé da aba HOME;
-- aparece em Help > About;
+- aparece em About Us (item da barra de menus);
 - `packaging/deb/build.sh` usa como padrão ao gerar o `.deb`.
 
 `packaging/deb/build.sh` recusa rodar se `MODULES/versao.py` e a primeira linha

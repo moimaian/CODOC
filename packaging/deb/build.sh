@@ -10,7 +10,7 @@
 # nova sem quebrar nada, MAJOR para mudança incompatível; N é a revisão de
 # empacotamento, só sobe sozinha se for uma mudança que não toca em
 # CODOC.py nem MODULES/). Sem argumento, usa MODULES/versao.py (fonte única —
-# é o mesmo valor mostrado no rodapé da HOME e em Help > About). Lembre de:
+# é o mesmo valor mostrado no rodapé da HOME e em About Us). Lembre de:
 # 1) atualizar MODULES/versao.py, 2) adicionar a entrada correspondente no
 # topo de packaging/deb/changelog, antes de rodar este script.
 #
