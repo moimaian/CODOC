@@ -86,6 +86,12 @@ codoc (2.1.0-1) unstable; urgency=low
     - Retomada do docking mais robusta: um resultado cortado por queda de
       energia é refeito, as saídas já prontas de um grupo Vina-GPU interrompido
       são aproveitadas e só os ligantes pendentes são enviados ao Vina-GPU.
+    - Install Requirements (e o Software Specs da HOME) passaram a cobrir o que
+      o CODOC chama fora do Python: o Java JRE 17 e o P2Rank 2.5.1 (baixado
+      para $HOME/p2rank_2.5.1), o clinfo, o wget, o build-essential e os
+      cabeçalhos OpenCL (compilação do Boost e do Vina-GPU, que agora também
+      aceita os cabeçalhos do sistema no lugar do CUDA toolkit) e o xdg-utils.
+      Quando falta uma ferramenta a mensagem diz qual linha marcar.
     - Manuais em português e inglês atualizados para esta versão.
 
  -- Moisés Maia <moimaian@gmail.com>  Wed, 18 Nov 2026 12:00:00 -0300

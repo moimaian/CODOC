@@ -266,12 +266,17 @@ def prepare_receptor_with_protonation(
 # ---------------------------------------------------------------------------
 
 P2RANK_INSTALL_HINT = (
-    "P2Rank was not found. To install it:\n"
+    "P2Rank was not found. Install it with Install Requirements (External Programs: 'Java JRE 17 (P2Rank)' "
+    "and 'P2Rank'), or by hand:\n"
     "  sudo apt install openjdk-17-jre-headless\n"
     "  wget https://github.com/rdk/p2rank/releases/download/2.5.1/p2rank_2.5.1.tar.gz\n"
     "  tar -xzf p2rank_2.5.1.tar.gz -C ~/\n"
     "Then export P2RANK_HOME=~/p2rank_2.5.1 or add its folder to PATH.\n"
     "P2Rank requires Java 17 or newer."
+)
+P2RANK_JAVA_HINT = (
+    "P2Rank is a Java program and no Java was found. Install it with Install Requirements "
+    "(External Programs: 'Java JRE 17 (P2Rank)') or: sudo apt install openjdk-17-jre-headless"
 )
 
 
@@ -349,6 +354,8 @@ def detect_pockets_p2rank(
     prank = find_p2rank(search_root)
     if prank is None:
         raise TargetPrepareError(P2RANK_INSTALL_HINT)
+    if _which_or_none("java") is None and not os.environ.get("JAVA_HOME"):
+        raise TargetPrepareError(P2RANK_JAVA_HINT)
 
     work_dir = tempfile.mkdtemp(prefix="codoc_p2rank_")
     try:

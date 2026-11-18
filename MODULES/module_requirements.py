@@ -61,13 +61,26 @@ CODOC_PYTHON_DEFAULTS = {
     "python-docx": "python-docx>=1.1,<2.0",
 }
 
+# display name -> apt package. Besides Open Babel (an engine), these are what the other tools
+# need to be installed and to work: Java for P2Rank, clinfo for the OpenCL device lists, wget for
+# every download of this dialog, the compilers and the OpenCL headers to build Boost and Vina-GPU,
+# xdg-utils for the "Open ... folder" buttons.
 CODOC_SYSTEM_DEFAULTS = {
     "openbabel": "openbabel",
+    "Java JRE 17 (P2Rank)": "openjdk-17-jre-headless",
+    "clinfo (OpenCL devices)": "clinfo",
+    "wget (downloads)": "wget",
+    "build-essential (Boost, Vina-GPU)": "build-essential",
+    "opencl-headers (Vina-GPU)": "opencl-headers",
+    "ocl-icd-opencl-dev (Vina-GPU)": "ocl-icd-opencl-dev",
+    "xdg-utils (open folders)": "xdg-utils",
 }
 
 VINA_VERSION = "1.2.5"
 VINA_GPU_VERSION = "2.1"
 ADFR_VERSION = "1.0"
+P2RANK_VERSION = "2.5.1"
+JAVA_MIN_MAJOR = 17          # P2Rank 2.5 needs Java 17 or newer
 
 # name -> (internal key, pinned version shown/validated in the "Version / spec" field).
 # CODOC.py hardcodes the exact binary/directory names below for these tools (e.g. the
@@ -80,10 +93,12 @@ CODOC_TOOL_DEFAULTS = {
     "Boost": ("boost", BOOST_VERSION),
     "ADFRsuite / prepare_receptor": ("adfr", ADFR_VERSION),
     "Vina-GPU": ("vinagpu", VINA_GPU_VERSION),
+    "P2Rank": ("p2rank", P2RANK_VERSION),
 }
 
 VINA_URL = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/vina_1.2.5_linux_x86_64"
 VINA_SPLIT_URL = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/vina_split_1.2.5_linux_x86_64"
+P2RANK_URL = f"https://github.com/rdk/p2rank/releases/download/{P2RANK_VERSION}/p2rank_{P2RANK_VERSION}.tar.gz"
 VINA_GPU_ARCHIVE = "Vina-GPU-2.1.zip"
 BOOST_ARCHIVE = "boost_1_84_0.tar.gz"
 
@@ -430,21 +445,37 @@ def install_python_packages(pybin: str, packages: list[str]) -> subprocess.Compl
     return _run([pybin, "-m", "pip", "install", "--upgrade"] + packages)
 
 
+def _require_commands(commands: list[str], apt_package: str, needed_for: str) -> None:
+    """Fail with a message that names the External Programs row to tick, instead of a bare
+    FileNotFoundError from subprocess."""
+    missing = [command for command in commands if not _which(command)]
+    if missing:
+        raise RuntimeError(
+            f"{', '.join(missing)} not found, which is needed {needed_for}. "
+            f"Tick the External Programs row of the apt package '{apt_package}' (or run: sudo apt-get install {apt_package}) and try again."
+        )
+
+
+def _download(url: str, destination: str, label: str) -> None:
+    _require_commands(["wget"], "wget", f"to download {label}")
+    result = _run(["wget", "-O", destination, url])
+    if result.returncode != 0 or not os.path.isfile(destination):
+        if os.path.isfile(destination):
+            os.remove(destination)
+        raise RuntimeError(f"Failed to download {label} from {url}:\n{result.stdout}")
+
+
 def ensure_vina_binaries(bin_dir: str) -> str:
     os.makedirs(bin_dir, exist_ok=True)
     vina_path = os.path.join(bin_dir, "vina_1.2.5_linux_x86_64")
     vina_split_path = os.path.join(bin_dir, "vina_split_1.2.5_linux_x86_64")
 
     if not os.path.isfile(vina_path):
-        result = _run(["wget", "-O", vina_path, VINA_URL])
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to download vina:\n{result.stdout}")
+        _download(VINA_URL, vina_path, "vina")
         os.chmod(vina_path, 0o755)
 
     if not os.path.isfile(vina_split_path):
-        result = _run(["wget", "-O", vina_split_path, VINA_SPLIT_URL])
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to download vina_split:\n{result.stdout}")
+        _download(VINA_SPLIT_URL, vina_split_path, "vina_split")
         os.chmod(vina_split_path, 0o755)
 
     return vina_path
@@ -457,11 +488,7 @@ def _ensure_bundled_archive(archive_path: str, download_url: str, label: str) ->
     if os.path.isfile(archive_path):
         return
     os.makedirs(os.path.dirname(archive_path), exist_ok=True)
-    result = _run(["wget", "-O", archive_path, download_url])
-    if result.returncode != 0 or not os.path.isfile(archive_path):
-        if os.path.isfile(archive_path):
-            os.remove(archive_path)
-        raise RuntimeError(f"Failed to download {label} from {download_url}:\n{result.stdout}")
+    _download(download_url, archive_path, label)
 
 
 def boost_paths(home_dir: Optional[str] = None) -> dict[str, str]:
@@ -507,6 +534,7 @@ def ensure_boost_installation(app_dir: str) -> str:
     if get_boost_version() == BOOST_VERSION:
         return paths["root"]
 
+    _require_commands(["gcc", "g++", "make"], "build-essential", "to build Boost")
     archive_path = os.path.join(app_dir, "BIN", BOOST_ARCHIVE)
     _ensure_bundled_archive(archive_path, BOOST_ARCHIVE_URL, "Boost")
 
@@ -539,6 +567,63 @@ def ensure_boost_installation(app_dir: str) -> str:
             f"Boost installation finished but version {BOOST_VERSION} was not detected in {paths['root']}."
         )
     return paths["root"]
+
+
+def get_java_version() -> Optional[str]:
+    """Version of the Java runtime on the PATH ("17.0.21"), None when there is none."""
+    java = _which("java")
+    if not java:
+        return None
+    result = _run([java, "-version"])
+    match = re.search(r'version "([^"]+)"', result.stdout or "")
+    return match.group(1) if result.returncode == 0 and match else None
+
+
+def java_major(version: str) -> int:
+    """Major number of a Java version string: "17.0.21" -> 17, "1.8.0_392" -> 8."""
+    parts = re.split(r"[._\-+]", version)
+    try:
+        return int(parts[1]) if parts[0] == "1" and len(parts) > 1 else int(parts[0])
+    except ValueError:
+        return 0
+
+
+def p2rank_paths(home_dir: Optional[str] = None) -> dict[str, str]:
+    install_dir = os.path.join(home_dir or str(Path.home()), f"p2rank_{P2RANK_VERSION}")
+    return {"install_dir": install_dir, "launcher": os.path.join(install_dir, "prank")}
+
+
+def get_p2rank_version(app_dir: Optional[str] = None) -> Optional[str]:
+    """Version of the P2Rank that STEP 2 would use (read from the name of its folder), None when
+    P2Rank is not installed."""
+    from MODULES.module_target_prepare import find_p2rank
+
+    launcher = find_p2rank(app_dir)
+    if not launcher:
+        return None
+    match = re.search(r"p2rank[_-]?(\d+(?:\.\d+)+)", os.path.basename(os.path.dirname(launcher)), re.IGNORECASE)
+    return match.group(1) if match else "available"
+
+
+def ensure_p2rank_installation(app_dir: str) -> str:
+    """Download P2Rank to $HOME/p2rank_<version> (one of the places STEP 2 searches) unless some
+    P2Rank is already found; returns the prank launcher."""
+    from MODULES.module_target_prepare import find_p2rank
+
+    existing = find_p2rank(app_dir)
+    if existing:
+        return existing
+    paths = p2rank_paths()
+    with tempfile.TemporaryDirectory(prefix="codoc-p2rank-") as temp_dir:
+        archive_path = os.path.join(temp_dir, f"p2rank_{P2RANK_VERSION}.tar.gz")
+        _download(P2RANK_URL, archive_path, f"P2Rank {P2RANK_VERSION} (about 280 MB)")
+        shutil.unpack_archive(archive_path, temp_dir)
+        extracted_dir = os.path.join(temp_dir, f"p2rank_{P2RANK_VERSION}")
+        if not os.path.isfile(os.path.join(extracted_dir, "prank")):
+            raise RuntimeError(f"Could not locate p2rank_{P2RANK_VERSION}/prank inside the downloaded archive.")
+        shutil.copytree(extracted_dir, paths["install_dir"])
+    os.chmod(paths["launcher"], 0o755)
+    return paths["launcher"]
 
 
 def vina_gpu_paths(home_dir: Optional[str] = None) -> dict[str, str]:
@@ -858,9 +943,18 @@ void SetupContext""",
     Path(main_cpp).write_text(main_cpp_content, encoding="utf-8")
 
 
+def _opencl_root() -> Optional[str]:
+    """Folder whose include/CL/cl.h holds the OpenCL headers Vina-GPU is built against: the CUDA
+    toolkit when it is there, otherwise the system's (opencl-headers + ocl-icd-opencl-dev)."""
+    for root in ("/usr/local/cuda", "/usr"):
+        if os.path.isfile(os.path.join(root, "include", "CL", "cl.h")):
+            return root
+    return None
+
+
 def _patch_vina_gpu_makefile(makefile_path: str, install_dir: str) -> None:
     boost_root = boost_paths()["root"]
-    opencl_root = "/usr/local/cuda"
+    opencl_root = _opencl_root() or "/usr/local/cuda"
     content = (
         "# Need to be modified according to different users\n"
         f"WORK_DIR={install_dir}\n"
@@ -877,7 +971,7 @@ def _patch_vina_gpu_makefile(makefile_path: str, install_dir: str) -> None:
         "LIB1=-l:libboost_program_options.a -l:libboost_system.a -l:libboost_filesystem.a -lOpenCL\n"
         "LIB2=-lstdc++ -lstdc++fs\n"
         "LIB3=-lm -lpthread\n"
-        "LIB_PATH=-L$(BOOST_LIB_PATH)/stage/lib -L$(OPENCL_LIB_PATH)/lib64\n"
+        "LIB_PATH=-L$(BOOST_LIB_PATH)/stage/lib -L$(OPENCL_LIB_PATH)/lib64 -L/usr/lib/x86_64-linux-gnu\n"
         "SRC=./lib/*.cpp ./OpenCL/src/wrapcl.cpp $(BOOST_LIB_PATH)/libs/thread/src/pthread/thread.cpp $(BOOST_LIB_PATH)/libs/thread/src/pthread/once.cpp\n"
         "MACRO=$(OPENCL_VERSION) $(GPU_PLATFORM) $(DOCKING_BOX_SIZE) -DBOOST_TIMER_ENABLE_DEPRECATED $(CUSTOM_OPT)\n"
         "all:out\n"
@@ -894,6 +988,12 @@ def _patch_vina_gpu_makefile(makefile_path: str, install_dir: str) -> None:
 
 
 def _rebuild_vina_gpu(install_dir: str) -> None:
+    _require_commands(["gcc", "g++", "make"], "build-essential", "to build Vina-GPU")
+    if _opencl_root() is None:
+        raise RuntimeError(
+            "The OpenCL headers (CL/cl.h) were not found, which Vina-GPU needs to be built. Tick "
+            "'opencl-headers' and 'ocl-icd-opencl-dev' in External Programs (or install the CUDA toolkit) and try again."
+        )
     makefile_path = vina_gpu_paths()["makefile"]
     _patch_vina_gpu_backend_sources(install_dir)
     _patch_vina_gpu_makefile(makefile_path, install_dir)
@@ -1140,6 +1240,16 @@ class RequirementsInstaller(cast(Any, QDialog)):
                             f"{prepare_receptor}"
                         )
                     self.log_signal.emit(f"ADFRsuite validated at {prepare_receptor}\n")
+                elif tool_key == "p2rank":
+                    launcher = ensure_p2rank_installation(self.app_dir)
+                    self.log_signal.emit(f"P2Rank {get_p2rank_version(self.app_dir) or 'installed'} available at {launcher}\n")
+                    java_version = get_java_version()
+                    if java_version is None or java_major(java_version) < JAVA_MIN_MAJOR:
+                        self.log_signal.emit(
+                            f"Warning: P2Rank needs Java {JAVA_MIN_MAJOR} or newer and "
+                            + (f"Java {java_version} was found" if java_version else "no Java was found")
+                            + ". Tick 'Java JRE 17 (P2Rank)' in External Programs to install it.\n"
+                        )
                 elif tool_key == "vinagpu":
                     vina_gpu = ensure_vina_gpu_installation(self.app_dir)
                     vina_gpu_version = get_vina_gpu_version(vina_gpu) or "installed"

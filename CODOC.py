@@ -153,7 +153,10 @@ from PyQt5.QtWidgets import (
 )
 
 from MODULES.versao import VERSAO
-from MODULES.module_requirements import RequirementsInstaller, detect_hardware, detect_opencl_devices, get_boost_version, get_vina_gpu_version, venv_paths
+from MODULES.module_requirements import (
+    JAVA_MIN_MAJOR, RequirementsInstaller, detect_hardware, detect_opencl_devices, get_boost_version, get_java_version,
+    get_p2rank_version, get_vina_gpu_version, java_major, venv_paths,
+)
 from MODULES.module_target_prepare import (
     TargetPrepareError,
     detect_pockets_p2rank,
@@ -2760,7 +2763,7 @@ class MainWindow(QMainWindow):
         for idx, (name, version) in enumerate(sw_items):
             row = idx // cols
             col = (idx % cols) * 3
-            ok = version != "not installed"
+            ok = version != "not installed" and "needed" not in version
             name_label = QLabel(name)
             name_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
             version_label = QLabel(version)
@@ -3172,6 +3175,25 @@ class MainWindow(QMainWindow):
         except importlib.metadata.PackageNotFoundError:
             propka_status = "not installed"
         rows.append(("PROPKA", propka_status))
+        # What the heuristic pocket search (STEP 2) and the OpenCL device lists (CONFIG) call outside Python
+        java_version = get_java_version()
+        if java_version is None:
+            java_status = "not installed"
+        elif java_major(java_version) < JAVA_MIN_MAJOR:
+            java_status = f"{java_version} ({JAVA_MIN_MAJOR}+ needed)"
+        else:
+            java_status = java_version
+        rows.append(("Java (JRE)", java_status))
+        rows.append(("P2Rank", get_p2rank_version(self.app_dir) or "not installed"))
+        clinfo_status = "not installed"
+        if shutil.which("clinfo"):
+            clinfo_status = "available"
+            try:
+                match = re.search(r"\b\d+(?:\.\d+)+\b", subprocess.run(["clinfo", "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5).stdout)
+                clinfo_status = match.group(0) if match else clinfo_status
+            except Exception:
+                pass
+        rows.append(("clinfo", clinfo_status))
         return rows
 
     def _settings_buttons_row(self) -> QHBoxLayout:
