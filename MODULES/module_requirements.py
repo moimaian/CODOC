@@ -1512,15 +1512,19 @@ def _prepare_vina_gpu_windows(install_dir: str) -> None:
             f"receptor = {Path(receptor).as_posix()}",
             f"ligand_directory = {Path(ligand_dir).as_posix()}",
             f"output_directory = {Path(output_dir).as_posix()}",
-            f"opencl_binary_path = {Path(install_dir).as_posix()}",
             "center_x = 40.415", "center_y = 110.986", "center_z = 82.673",
             "size_x = 30", "size_y = 30", "size_z = 30", "thread = 8000",
         ]
         Path(config).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # This executable has no opencl_binary_path option: it reads and writes the kernels in the current folder.
         result = _run([paths["source_executable"], "--config", config], cwd=install_dir)
     missing = [n for n in ("Kernel1_Opt.bin", "Kernel2_Opt.bin") if not os.path.isfile(os.path.join(install_dir, n))]
     if missing:
-        tail = "\n".join((result.stdout or "").strip().splitlines()[-8:])
+        # the cause is at the top of the output; the usage text that follows an error is not worth showing
+        output_lines = (result.stdout or "").strip().splitlines()
+        if "Correct usage:" in output_lines:
+            output_lines = output_lines[:output_lines.index("Correct usage:")]
+        tail = "\n".join(output_lines[-8:])
         raise RuntimeError(
             "Vina-GPU could not build its OpenCL kernels for this GPU (" + ", ".join(missing) + " missing). "
             "It needs a GPU with an up-to-date OpenCL driver (NVIDIA, AMD or Intel).\n" + tail

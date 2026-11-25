@@ -80,7 +80,7 @@ From then on, open CODOC with the shortcut. What is different on Windows:
   - Vina-GPU 2.1: the archive of the BIN folder carries the Windows executables (Vina-GPU+.exe and
     Vina-GPU+_K.exe), so nothing is compiled. The installer runs Vina-GPU+_K.exe once on an example docking to
     build the OpenCL kernels of YOUR graphics card (needs an up-to-date OpenCL driver). This build has no
-    platform/device options and writes no progress file: it always uses the default OpenCL device, one group of
+    opencl_binary_path (it finds the kernels in its own folder) and no platform/device options and writes no progress file: it always uses the default OpenCL device, one group of
     ligands at a time, and the Docking monitor counts the finished groups instead.
   - ADFRsuite 1.0 is installed by hand with its own Windows installer (https://ccsb.scripps.edu/adfr/downloads/);
     CODOC finds prepare_receptor in %USERPROFILE%\ADFRsuite-1.0 or in the ADFRsuite folders of Program Files.

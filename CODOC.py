@@ -1040,7 +1040,9 @@ class DockingWorker(QThread):
         where = f" on OpenCL device {device_id}" if show_device else ""
         self.progress_text.emit(f"Running GPU docking on group {ligand_group} against {target_name} ({index}/{total}){where}")
         try:
-            returncode, output = self._run_process([self.vina_gpu, "--config", config_path], cwd=self.app_dir)
+            # Windows: the kernels (Kernel1_Opt.bin / Kernel2_Opt.bin) are read from the current folder
+            gpu_cwd = str(Path(self.vina_gpu).parent) if IS_WINDOWS else self.app_dir
+            returncode, output = self._run_process([self.vina_gpu, "--config", config_path], cwd=gpu_cwd)
         finally:
             if pending_dir:
                 shutil.rmtree(pending_dir, ignore_errors=True)
@@ -1092,7 +1094,6 @@ class DockingWorker(QThread):
             f"receptor = {_config_path(job['receptor'])}",
             f"ligand_directory = {_config_path(ligand_dir)}",
             f"output_directory = {_config_path(output_dir)}",
-            f"opencl_binary_path = {_config_path(str(Path(self.vina_gpu).parent))}",
             f"center_x = {job['center_x']}",
             f"center_y = {job['center_y']}",
             f"center_z = {job['center_z']}",
@@ -1101,6 +1102,8 @@ class DockingWorker(QThread):
             f"size_z = {job['size_z']}",
             f"thread = {self.settings.gpu_threads}",
         ]
+        if not IS_WINDOWS:           # the Windows build has no such option: it finds the kernels in its own folder
+            lines.insert(3, f"opencl_binary_path = {_config_path(str(Path(self.vina_gpu).parent))}")
         if self.settings.opencl_platform_id >= 0 and not IS_WINDOWS:       # the Windows build has neither option
             lines.append(f"platform_id = {self.settings.opencl_platform_id}")
         if device_id >= 0 and not IS_WINDOWS:
