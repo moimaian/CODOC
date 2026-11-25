@@ -1,0 +1,10 @@
+CC(C)OC(=O)Nc1ccc2[nH]c(c3cscn3)nc2c1   Cambendazole
+COC(=O)Nc1nc2cc(Sc3ccccc3)ccc2[nH]1 Fenbendazole
+COC(=O)Nc1nc2cc(C(=O)c3ccc(F)cc3)ccc2[nH]1  Flubendazole
+COC(=O)Nc1nc2cc(C(=O)c3ccccc3)ccc2[nH]1 Mebendazole
+COC(=O)Nc1nc2cc(C(=O)c3cccs3)ccc2[nH]1  Nocodazole
+COC(=O)Nc1nc2cc([S+]([O-])c3ccccc3)ccc2[nH]1    Oxfendazole
+CCCOc1ccc2[nH]c(NC(=O)OC)nc2c1  Oxibendazole
+CCCCc1ccc2[nH]c(NC(=O)OC)nc2c1  Parbendazole,
+c1ccc2[nH]c(c3cscn3)nc2c1   Tiabendazole
+CSc1nc2cc(Cl)c(Oc3cccc(Cl)c3Cl)cc2[nH]1 Triclabendazole
