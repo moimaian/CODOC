@@ -29,6 +29,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
+from MODULES import platform_utils
+
 try:
     import numpy as np
 except Exception:  # pragma: no cover - numpy ships with the RDKit/pandas stack
@@ -294,7 +296,7 @@ def _mol_with_bond_orders(ligand: CocrystalLigand, template_smiles: Optional[str
         except CocrystalError:
             pass
 
-    obabel = shutil.which("obabel")
+    obabel = platform_utils.find_obabel()
     if obabel:
         with tempfile.TemporaryDirectory(prefix="codoc_cocrystal_") as work_dir:
             pdb_path = os.path.join(work_dir, "ligand.pdb")

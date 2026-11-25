@@ -1,3 +1,40 @@
+codoc (2.2.0-1) unstable; urgency=low
+
+  * Versão MINOR: o CODOC passa a rodar também no Windows 10/11 (64 bits).
+    O Linux continua igual.
+    - Install-CODOC.ps1 (PowerShell) e CODOC_Windows.bat (duplo clique):
+      copiam o programa para %USERPROFILE%\CODOC, acham o Python 3.10 ou
+      instalam o 3.10.11 do python.org (confere a assinatura digital, só
+      para o usuário), rodam "python CODOC.py --setup" (venv em
+      %USERPROFILE%\.venv\CODOC, runtime Visual C++ do Qt5, pacotes
+      essenciais e o AutoDock Vina 1.2.5 para Windows), criam os atalhos
+      CODOC.lnk na Área de Trabalho e no Menu Iniciar (pythonw.exe, sem
+      janela de console) e abrem o programa na janela Install Requirements.
+    - MODULES/platform_utils.py reúne o que muda entre os sistemas (nomes dos
+      binários do Vina, onde estão o obabel, o java, o prepare_receptor e o
+      prank, abrir pastas, filhos sem janela de console). MODULES/
+      module_requirements.py: venv em Scripts\, Python 3.10.11, winget,
+      atalhos, reinício após instalar. Install Requirements adapta as linhas
+      ao sistema: no Windows o Open Babel vem do pacote pip openbabel-wheel,
+      o Java e o runtime Visual C++ do winget, o AutoDock Vina 1.2.5 dos
+      binários vina_1.2.5_win.exe e vina_split_1.2.5_win.exe, e não há linhas
+      de apt, Boost, clinfo nem wget (os downloads usam o próprio Python).
+    - Vina-GPU 2.1 no Windows: usa os executáveis do próprio zip (Vina-GPU+.exe
+      e Vina-GPU+_K.exe), sem compilar nada; o instalador roda o Vina-GPU+_K.exe
+      uma vez num docking de exemplo para gerar os kernels OpenCL da sua placa.
+      Essa versão não tem platform_id/device_id nem arquivo de progresso: usa o
+      dispositivo OpenCL padrão, um grupo por vez, e o Docking monitor conta os
+      grupos concluídos.
+    - Dispositivos OpenCL lidos da própria OpenCL.dll (ctypes) quando não há
+      clinfo; Help > Terminal e o log da sessão sem tee/tail/bash (PowerShell,
+      %LOCALAPPDATA%\CODOC\terminal.log); P2Rank por prank.bat e Java achado em
+      Program Files; ADFRsuite procurado também em Program Files; arquivos de
+      configuração do Vina com barras normais; conversão em paralelo limitada
+      a 61 processos; cópia no lugar do link simbólico dos ligantes pendentes
+      do Vina-GPU; modelo da CPU lido do registro do Windows.
+
+ -- Moisés Maia <moimaian@gmail.com>  Wed, 25 Nov 2026 12:00:00 -0300
+
 codoc (2.1.0-1) unstable; urgency=low
 
   * Versão MINOR: refinamentos da interface e funcionalidades novas sobre os

@@ -26,8 +26,9 @@ The version number is in MODULES/versao.py; it is also shown in the HOME tab and
 #                                           1. INSTALLATION                                                    #
 ################################################################################################################
 
-CODOC runs on Linux. It was developed and tested on Linux Mint 21 (Ubuntu 22.04 base) with an NVIDIA GPU.
-It will probably work on Ubuntu and its flavors; other distributions are not guaranteed.
+CODOC runs on Linux and on Windows 10/11 (64 bits). It was developed and tested on Linux Mint 21 (Ubuntu 22.04
+base) with an NVIDIA GPU. It will probably work on Ubuntu and its flavors; other distributions are not guaranteed.
+The Windows version has not been tested on a real Windows yet (see "Option C" below for what is different).
 
 # Option A - .deb package (Debian, Ubuntu, Linux Mint)
 
@@ -52,6 +53,41 @@ See packaging/VERSIONING.md (version numbering rules) and packaging/deb/README.m
 
        cd $HOME/CODOC && python3 CODOC.py
 
+# Option C - Windows 10/11
+
+  1. Download https://github.com/moimaian/CODOC/archive/refs/heads/main.zip and extract it anywhere;
+  2. Double-click CODOC_Windows.bat (it runs Install-CODOC.ps1). There is no terminal to open and no command
+     to type. If Windows shows "Windows protected your PC", click "More info" > "Run anyway".
+
+The script, on the first run only:
+  - copies the program to %USERPROFILE%\CODOC (the program must reside there; PROJECTS and BASE are never
+    overwritten) - or downloads it from GitHub when Install-CODOC.ps1 is run alone;
+  - looks for Python 3.10 or newer; if there is none it downloads the official Python 3.10.11 installer from
+    python.org, checks its digital signature and installs it for the current user (no administrator rights);
+  - runs "python CODOC.py --setup": creates the virtual environment %USERPROFILE%\.venv\CODOC with Python
+    3.10.11 (the last 3.10 release with a Windows installer; on Linux it is 3.10.12), installs the Visual C++
+    runtime that the Qt5 libraries need (Windows asks for administrator confirmation once), the essential
+    packages and the Windows build of AutoDock Vina 1.2.5 and vina_split;
+  - creates the CODOC shortcut on the Desktop and in the Start Menu (it starts CODOC with pythonw.exe, so no
+    console window appears; Help > Terminal shows the program output) and opens CODOC, which on this first
+    start shows the Install Requirements window.
+
+From then on, open CODOC with the shortcut. What is different on Windows:
+  - Install Requirements adapts to the system: Open Babel comes from the openbabel-wheel pip package (obabel.exe
+    goes to the venv), Java 17 and the Visual C++ runtime from winget, AutoDock Vina 1.2.5 from the release
+    binaries vina_1.2.5_win.exe / vina_split_1.2.5_win.exe (BIN folder). There is no Boost, apt, clinfo or wget
+    row; downloads use Python itself and the OpenCL devices are read from OpenCL.dll (installed with the GPU driver).
+  - Vina-GPU 2.1: the archive of the BIN folder carries the Windows executables (Vina-GPU+.exe and
+    Vina-GPU+_K.exe), so nothing is compiled. The installer runs Vina-GPU+_K.exe once on an example docking to
+    build the OpenCL kernels of YOUR graphics card (needs an up-to-date OpenCL driver). This build has no
+    platform/device options and writes no progress file: it always uses the default OpenCL device, one group of
+    ligands at a time, and the Docking monitor counts the finished groups instead.
+  - ADFRsuite 1.0 is installed by hand with its own Windows installer (https://ccsb.scripps.edu/adfr/downloads/);
+    CODOC finds prepare_receptor in %USERPROFILE%\ADFRsuite-1.0 or in the ADFRsuite folders of Program Files.
+  - P2Rank runs through prank.bat (downloaded to %USERPROFILE%\p2rank_2.5.1 by Install Requirements).
+  - The log of the session (Help > Terminal) is %LOCALAPPDATA%\CODOC\terminal.log.
+  - Keep the project and ligand names short: Windows limits a full path to 260 characters.
+
 # First run
 
 CODOC creates a Python virtual environment at $HOME/.venv/CODOC with Python 3.10.12 (when this Python is not
@@ -73,16 +109,21 @@ check the components and click "Install Selected":
 
   - Python libraries: PyQt5, pandas, matplotlib, numpy, scipy, psutil, gemmi, RDKit, Meeko, Dimorphite-DL,
     PDB2PQR, PROPKA, python-docx;
-  - Open Babel 3.x (apt);
-  - AutoDock Vina 1.2.5 and vina_split (downloaded to the BIN folder);
+  - Open Babel 3.x (apt; on Windows the openbabel-wheel pip package);
+  - AutoDock Vina 1.2.5 and vina_split (downloaded to the BIN folder; on Windows the vina_*_win.exe binaries);
   - Boost 1.84 and Vina-GPU 2.1 custom fork (built from the archives of the BIN folder; if they are missing
-    they are downloaded from the "deps-v1" release of the project repository);
+    they are downloaded from the "deps-v1" release of the project repository; on Windows only the Vina-GPU
+    archive is used, with its prebuilt executables, and there is no Boost);
   - ADFRsuite 1.0 (prepare_receptor): install it manually in $HOME/ADFRsuite-1.0; the installer only checks it;
-  - P2Rank (optional, pocket search in STEP 2): needs a Java runtime 17 or newer and the P2Rank folder
-    extracted in your home folder (or pointed to by the P2RANK_HOME variable).
+  - P2Rank 2.5.1 (optional, pocket search in STEP 2): needs a Java runtime 17 or newer. Install Requirements
+    installs Java (apt; winget on Windows) and downloads P2Rank to $HOME/p2rank_2.5.1 (or use the P2RANK_HOME
+    variable).
 
 For GPU docking an OpenCL-capable driver is needed. If the machine has a Windows dual boot with Secure Boot
 enabled, disable it in the BIOS, otherwise Vina-GPU may not be authorised to access the OpenCL platform.
+
+The other external programs that CODOC calls also have a row in Install Requirements (Linux): Java JRE 17 and
+P2Rank, clinfo, wget, build-essential, opencl-headers and ocl-icd-opencl-dev, xdg-utils.
 
 ################################################################################################################
 #                                      2. USE AND DIRECTORY ORGANIZATION                                       #
@@ -90,7 +131,9 @@ enabled, disable it in the BIOS, otherwise Vina-GPU may not be authorised to acc
 
 CODOC/
   CODOC.py          main program
-  MODULES/          interface texts, installer, projects, report, target and redocking tools, version
+  Install-CODOC.ps1, CODOC_Windows.bat    Windows installer (PowerShell) and its double-click launcher
+  MODULES/          interface texts, installer, projects, report, target and redocking tools, version,
+                    platform_utils.py (what changes between Linux and Windows)
   ICONS/            logos and language flags
   BIN/              vina, vina_split and the Boost and Vina-GPU archives
   BASE/             your libraries: ligand files/folders and target structures (STEP 1 and STEP 2 open here)

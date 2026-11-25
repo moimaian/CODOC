@@ -39,15 +39,70 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-STATE_DIR = Path.home() / ".local" / "state" / "CODOC"
+from MODULES import platform_utils
+
+STATE_DIR = platform_utils.state_dir()          # Linux: ~/.local/state/CODOC ; Windows: %LOCALAPPDATA%\\CODOC
 LOG_FILE = STATE_DIR / "terminal.log"
 RC_FILE = STATE_DIR / "terminal.bashrc"
 HISTORY_LINES = 200          # linhas do log mostradas ao abrir o terminal
 
 
+class _TeeStream:
+    """Windows (sem dup2/pipe de descritores): copia o que o CODOC imprime para o console, se houver, e
+    para o log da sessão. Aberto pelo atalho (pythonw.exe) não há console e tudo vai só para o log."""
+
+    def __init__(self, console, log_file) -> None:
+        self._console = console
+        self._log = log_file
+
+    def write(self, text: str) -> int:
+        for stream in (self._console, self._log):
+            if stream is None:
+                continue
+            try:
+                stream.write(text)
+            except Exception:
+                pass
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in (self._console, self._log):
+            try:
+                if stream is not None:
+                    stream.flush()
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:
+        return False
+
+    encoding = "utf-8"
+    errors = "replace"
+
+    def writable(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        # whoever asks for a descriptor (a subprocess given sys.stdout, faulthandler) gets the log file
+        return self._log.fileno()
+
+
+def _setup_capture_windows() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = open(LOG_FILE, "w", encoding="utf-8", errors="replace", buffering=1)
+    console = sys.stdout if (sys.stdout is not None and sys.stdout.isatty()) else None
+    sys.stdout = sys.stderr = _TeeStream(console, log_file)
+
+
 def setup_capture() -> None:
     """Duplica stdout/stderr (nível de descritor de arquivo) para LOG_FILE. Chamar uma única vez,
     no processo principal. Nunca impede o programa de iniciar."""
+    if platform_utils.IS_WINDOWS:
+        try:
+            _setup_capture_windows()
+        except Exception:
+            pass
+        return
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         log_fp = open(LOG_FILE, "wb", buffering=0)
@@ -122,8 +177,50 @@ def terminal_command(emulator: str, shell_cmd: list[str]) -> list[str]:
     return [emulator, "-e"] + shell_cmd          # x-terminal-emulator, konsole, ...
 
 
+def _windows_terminal_script(app_dir: str, venv_dir: str) -> str:
+    def quote(text: str) -> str:
+        return "'" + text.replace("'", "''") + "'"
+
+    activate = os.path.join(venv_dir, "Scripts", "Activate.ps1")
+    return "\n".join([
+        "$Host.UI.RawUI.WindowTitle = 'CODOC Terminal'",
+        f"if (Test-Path -LiteralPath {quote(activate)}) {{ . {quote(activate)} }}",
+        "$env:PYTHONNOUSERSITE = '1'",
+        f"Set-Location -LiteralPath {quote(app_dir)}",
+        f"$log = {quote(str(LOG_FILE))}",
+        f"if (Test-Path -LiteralPath $log) {{ Get-Content -LiteralPath $log -Tail {HISTORY_LINES} }}",
+        # segue o log ao vivo numa tarefa em segundo plano, como o `tail -F &` do Linux
+        "$follow = [powershell]::Create().AddScript({ param($f)",
+        "  $stream = [System.IO.File]::Open($f, 'Open', 'Read', 'ReadWrite')",
+        "  $reader = New-Object System.IO.StreamReader($stream)",
+        "  $null = $reader.ReadToEnd()",
+        "  while ($true) { $line = $reader.ReadLine(); if ($null -ne $line) { [Console]::WriteLine($line) } else { Start-Sleep -Milliseconds 300 } }",
+        "}).AddArgument($log)",
+        "if (Test-Path -LiteralPath $log) { $null = $follow.BeginInvoke() }",
+        "Write-Host '[CODOC] Terminal - Python:' (Get-Command python).Source",
+        "Write-Host '[CODOC] The lines above are the output of the running CODOC; type any command below.'",
+    ])
+
+
+def _open_terminal_windows(app_dir: str, venv_dir: str) -> bool:
+    import base64
+
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        encoded = base64.b64encode(_windows_terminal_script(app_dir, venv_dir).encode("utf-16-le")).decode("ascii")
+        subprocess.Popen(
+            ["powershell", "-NoLogo", "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            cwd=app_dir, creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        return True
+    except OSError:
+        return False
+
+
 def open_terminal(app_dir: str, venv_dir: str) -> bool:
     """Abre o terminal descrito no cabeçalho do módulo. Devolve False se não há emulador instalado."""
+    if platform_utils.IS_WINDOWS:
+        return _open_terminal_windows(app_dir, venv_dir)
     try:
         _write_rc(app_dir, venv_dir)
     except OSError:

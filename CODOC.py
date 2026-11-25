@@ -49,6 +49,11 @@ os.environ.setdefault("PYTHONNOUSERSITE", "1")
 
 
 def _bootstrap_codoc_venv() -> None:
+    if "--setup" in sys.argv:
+        # Install-CODOC.ps1 (Windows): prepares the virtual environment, the essential packages and the
+        # shortcuts without opening the window.
+        from MODULES.module_requirements import run_setup
+        sys.exit(run_setup())
     if os.environ.get("CODOC_VENV_ACTIVE") == "1":
         return
     try:
@@ -152,10 +157,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from MODULES import platform_utils
+from MODULES.platform_utils import IS_WINDOWS
 from MODULES.versao import VERSAO
 from MODULES.module_requirements import (
     JAVA_MIN_MAJOR, RequirementsInstaller, detect_hardware, detect_opencl_devices, get_boost_version, get_java_version,
-    get_p2rank_version, get_vina_gpu_version, java_major, venv_paths,
+    get_p2rank_version, get_vina_gpu_version, java_major, venv_paths, vina_gpu_paths,
 )
 from MODULES.module_target_prepare import (
     TargetPrepareError,
@@ -674,6 +681,12 @@ def _parse_grid_file(path: str) -> dict[str, float | int]:
     return grid
 
 
+def _config_path(path: str) -> str:
+    """A path as written in a Vina / Vina-GPU config file. Windows: forward slashes, which the Windows API accepts
+    and which a config-file parser cannot mistake for escape characters."""
+    return str(path).replace("\\", "/") if IS_WINDOWS else str(path)
+
+
 class DockingWorker(QThread):
     progress_value = pyqtSignal(int)
     progress_text = pyqtSignal(str)
@@ -713,9 +726,8 @@ class DockingWorker(QThread):
         self._running_processes: list[subprocess.Popen] = []
         self._process_lock = threading.Lock()
         self.skipped_existing = 0   # ligands whose result is already in the project (resume)
-        self.vina = os.path.join(app_dir, "BIN", "vina_1.2.5_linux_x86_64")
-        self.vina_split = os.path.join(app_dir, "BIN", "vina_split_1.2.5_linux_x86_64")
-        self.vina_gpu = os.path.join(str(Path.home()), "Vina-GPU-2.1", "AutoDock-Vina-GPU-2.1", "AutoDock-Vina-GPU-2-1")
+        self.vina, self.vina_split = platform_utils.vina_binary_paths(os.path.join(app_dir, "BIN"))      # Windows: *_win.exe
+        self.vina_gpu = vina_gpu_paths()["executable"]
 
     def request_cancel(self) -> None:
         """Stop the docking: the Vina / Vina-GPU processes in course are terminated and no new ligand or group is
@@ -939,7 +951,14 @@ class DockingWorker(QThread):
         self._ensure_result_csv(csv_path)
         devices = list(dict.fromkeys(self.settings.opencl_device_ids)) or [-1]       # -1: the OpenCL default device
         devices = devices[:total] or devices[:1]
-        self.uses_vina_progress_file = len(devices) == 1      # with parallel runs the file is shared, so it is not trusted
+        if IS_WINDOWS:
+            # The Vina-GPU build for Windows has no platform_id / device_id options: it always uses the default
+            # OpenCL device, so one run at a time and no device is written to its config.
+            if devices != [-1]:
+                self.progress_text.emit("Vina-GPU on Windows uses the default OpenCL device; the selected device(s) are ignored.")
+            devices = [-1]
+        # With parallel runs the progress file is shared, so it is not trusted; the Windows build writes none.
+        self.uses_vina_progress_file = len(devices) == 1 and not IS_WINDOWS
         self.progress_text.emit(
             f"Using OpenCL platform_id={self.settings.opencl_platform_id}, device_id(s)="
             f"{', '.join(str(d) for d in devices) if devices != [-1] else 'default'} "
@@ -1010,7 +1029,12 @@ class DockingWorker(QThread):
             shutil.rmtree(pending_dir, ignore_errors=True)
             os.makedirs(pending_dir)
             for job in group_jobs:
-                os.symlink(os.path.abspath(job["ligand_file"]), os.path.join(pending_dir, os.path.basename(job["ligand_file"])))
+                source = os.path.abspath(job["ligand_file"])
+                link = os.path.join(pending_dir, os.path.basename(job["ligand_file"]))
+                try:
+                    os.symlink(source, link)
+                except OSError:          # Windows without the symbolic-link privilege: a copy does the same
+                    shutil.copyfile(source, link)
             ligand_dir = pending_dir
         self._write_gpu_config(config_path, group_jobs[0], ligand_dir, output_dir, device_id)
         where = f" on OpenCL device {device_id}" if show_device else ""
@@ -1037,8 +1061,8 @@ class DockingWorker(QThread):
 
     def _write_cpu_config(self, config_path: str, job: dict[str, str]) -> None:
         lines = [
-            f"receptor = {job['receptor']}",
-            f"ligand = {job['ligand_file']}",
+            f"receptor = {_config_path(job['receptor'])}",
+            f"ligand = {_config_path(job['ligand_file'])}",
             f"scoring = {self.settings.scoring_function}",
             f"center_x = {job['center_x']}",
             f"center_y = {job['center_y']}",
@@ -1046,7 +1070,7 @@ class DockingWorker(QThread):
             f"size_x = {job['size_x']}",
             f"size_y = {job['size_y']}",
             f"size_z = {job['size_z']}",
-            f"out = {job['output_file']}",
+            f"out = {_config_path(job['output_file'])}",
             f"cpu = {self.settings.cpu_threads}",
             f"exhaustiveness = {self.settings.exhaustiveness}",
             f"num_modes = {self.settings.poses}",
@@ -1059,16 +1083,16 @@ class DockingWorker(QThread):
         elif self.settings.docking_mode == "local_only":
             lines.append("local_only = true")
         if self.docking_type == "Flexible":
-            lines.insert(1, f"flex = {job['flex_receptor']}")
+            lines.insert(1, f"flex = {_config_path(job['flex_receptor'])}")
         with open(config_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
 
     def _write_gpu_config(self, config_path: str, job: dict[str, str], ligand_dir: str, output_dir: str, device_id: int) -> None:
         lines = [
-            f"receptor = {job['receptor']}",
-            f"ligand_directory = {ligand_dir}",
-            f"output_directory = {output_dir}",
-            f"opencl_binary_path = {Path(self.vina_gpu).parent}",
+            f"receptor = {_config_path(job['receptor'])}",
+            f"ligand_directory = {_config_path(ligand_dir)}",
+            f"output_directory = {_config_path(output_dir)}",
+            f"opencl_binary_path = {_config_path(str(Path(self.vina_gpu).parent))}",
             f"center_x = {job['center_x']}",
             f"center_y = {job['center_y']}",
             f"center_z = {job['center_z']}",
@@ -1077,12 +1101,12 @@ class DockingWorker(QThread):
             f"size_z = {job['size_z']}",
             f"thread = {self.settings.gpu_threads}",
         ]
-        if self.settings.opencl_platform_id >= 0:
+        if self.settings.opencl_platform_id >= 0 and not IS_WINDOWS:       # the Windows build has neither option
             lines.append(f"platform_id = {self.settings.opencl_platform_id}")
-        if device_id >= 0:
+        if device_id >= 0 and not IS_WINDOWS:
             lines.append(f"device_id = {device_id}")
         if self.docking_type == "Flexible":
-            lines.insert(1, f"flex = {job['flex_receptor']}")
+            lines.insert(1, f"flex = {_config_path(job['flex_receptor'])}")
         with open(config_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
 
@@ -1121,9 +1145,9 @@ def _lig_require_rdkit() -> None:
 
 
 def _lig_require_obabel() -> str:
-    obabel = shutil.which("obabel")
+    obabel = platform_utils.find_obabel()
     if not obabel:
-        raise RuntimeError("OpenBabel was not found in PATH. Install it before running this ligand routine.")
+        raise RuntimeError("OpenBabel was not found. Install it with Install Requirements (External Programs: Open Babel) before running this ligand routine.")
     return obabel
 
 
@@ -1526,9 +1550,9 @@ class LigandToolsWorker(QThread):
         return cleaned.strip("._") or "ligand"
 
     def _require_obabel(self) -> str:
-        obabel = shutil.which("obabel")
+        obabel = platform_utils.find_obabel()
         if not obabel:
-            raise RuntimeError("OpenBabel was not found in PATH. Install it before running this ligand routine.")
+            raise RuntimeError("OpenBabel was not found. Install it with Install Requirements (External Programs: Open Babel) before running this ligand routine.")
         return obabel
 
     def _require_rdkit(self) -> None:
@@ -1904,6 +1928,8 @@ class LigandToolsWorker(QThread):
 
         requested_workers = int(getattr(self.settings, "conversion_workers", os.cpu_count() or 1) or 1)
         workers = max(1, min(requested_workers, total))
+        if IS_WINDOWS:
+            workers = min(workers, 61)       # ProcessPoolExecutor cannot wait on more than 61 processes on Windows
 
         # Each ligand is dispatched to a pool of OS processes instead of a single serial loop,
         # so the conversion actually uses the available CPU cores.
@@ -2918,6 +2944,15 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        if not model and IS_WINDOWS:
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+                    model = str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+                    if base_mhz == 0.0:
+                        base_mhz = float(winreg.QueryValueEx(key, "~MHz")[0])
+            except Exception:
+                pass
         if not model:
             model = platform.processor() or "N/A"
 
@@ -3088,12 +3123,13 @@ class MainWindow(QMainWindow):
             version_args: list[str],
             local_file: str,
             line_index: int = 0,
+            binary_path: Optional[str] = None,
         ) -> str:
             def extract_numeric_version(text: str) -> Optional[str]:
-                match = re.search(r"\b\d+(?:\.\d+)+\b", text)
+                match = re.search(r"(?<![0-9.])\d+(?:\.\d+)+\b", text)       # also "v1.2.5"
                 return match.group(0) if match else None
 
-            command_path = shutil.which(command_name)
+            command_path = shutil.which(command_name) or (binary_path if binary_path and os.path.isfile(binary_path) else None)
             if command_path:
                 try:
                     result = subprocess.run(
@@ -3133,36 +3169,31 @@ class MainWindow(QMainWindow):
         except Exception:
             dimorphite_version = "not installed"
         rows.append(("Dimorphite-DL", str(dimorphite_version)))
-        rows.append(("Boost", get_boost_version() or "not installed"))
+        if not IS_WINDOWS:                    # Boost is only needed to build Vina-GPU on Linux
+            rows.append(("Boost", get_boost_version() or "not installed"))
+        obabel_path = platform_utils.find_obabel()
         rows.append((
             "OpenBabel",
             version_or_availability(
-                "obabel",
+                obabel_path or "obabel",
                 ["-V"],
                 os.path.join(self.bin_dir, "openbabel-3-0-0.tar.gz"),
             ),
         ))
+        vina_file, vina_split_file = platform_utils.vina_binary_paths(self.bin_dir)
         rows.append((
             "AutoDock Vina",
-            version_or_availability(
-                "vina",
-                ["--version"],
-                os.path.join(self.bin_dir, "vina_1.2.5_linux_x86_64"),
-            ),
+            version_or_availability("vina", ["--version"], vina_file, binary_path=vina_file),
         ))
         rows.append((
             "vina_split",
-            version_or_availability(
-                "vina_split",
-                ["--version"],
-                os.path.join(self.bin_dir, "vina_split_1.2.5_linux_x86_64"),
-            ),
+            version_or_availability("vina_split", ["--version"], vina_split_file, binary_path=vina_split_file),
         ))
-        rows.append(("ADFRsuite", "available" if os.path.isfile(os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")) else "not installed"))
+        rows.append(("ADFRsuite", "available" if platform_utils.find_adfr_prepare_receptor() else "not installed"))
         rows.append(("Vina-GPU", get_vina_gpu_version() or "not installed"))
         # PDB2PQR (protonation) and PROPKA (the pKa predictor it calls) are separate packages with their own versions
         try:
-            find_pdb2pqr(os.path.join(venv_paths("CODOC")["venv_dir"], "bin"))
+            find_pdb2pqr(platform_utils.venv_scripts_dir(venv_paths("CODOC")["venv_dir"]))
             try:
                 pdb2pqr_status = importlib.metadata.version("pdb2pqr")
             except importlib.metadata.PackageNotFoundError:
@@ -3186,6 +3217,14 @@ class MainWindow(QMainWindow):
         rows.append(("Java (JRE)", java_status))
         rows.append(("P2Rank", get_p2rank_version(self.app_dir) or "not installed"))
         clinfo_status = "not installed"
+        if IS_WINDOWS:
+            # no clinfo on Windows: CODOC asks the OpenCL library itself (OpenCL.dll, installed with the GPU driver)
+            try:
+                found = detect_opencl_devices()
+            except Exception:
+                found = []
+            rows.append(("OpenCL", f"{len(found)} device(s)" if found else "not installed"))
+            return rows
         if shutil.which("clinfo"):
             clinfo_status = "available"
             try:
@@ -4850,7 +4889,7 @@ class MainWindow(QMainWindow):
                         input_path=copied_target,
                         output_pdbqt_path=protein_out,
                         ph=target_ph,
-                        venv_bin_dir=os.path.join(venv_paths("CODOC")["venv_dir"], "bin"),
+                        venv_bin_dir=platform_utils.venv_scripts_dir(venv_paths("CODOC")["venv_dir"]),
                         log_path=os.path.join(target_dir, "protonation_log.txt"),
                     )
                 except TargetPrepareError as exc:
@@ -5190,7 +5229,10 @@ class MainWindow(QMainWindow):
         if not path or not os.path.exists(path):
             QMessageBox.warning(self, APP_NAME, f"Path not found: {path}")
             return
-        subprocess.Popen(["xdg-open", path])
+        try:
+            platform_utils.open_path(path)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not open {path}: {exc}")
 
     def _collect_settings_from_widgets(self) -> None:
         self.settings.scoring_function = self.cb_scoring.currentText().strip()
@@ -6092,6 +6134,15 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     codoc_terminal.setup_capture()      # keeps the session output for Help > Terminal
+    platform_utils.install_subprocess_defaults()
+    if IS_WINDOWS:
+        os.environ.setdefault("PYTHONUTF8", "1")        # the tools CODOC starts write UTF-8
+        try:
+            # its own taskbar identity (instead of "pythonw.exe"), so the pinned CODOC shortcut keeps its icon
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CODOC.CEB.UFPR")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     # Ties the running window to the CODOC.desktop launcher (StartupWMClass=CODOC there matches
     # this) so the panel/window-list picks up the same icon as the menu entry, instead of relying
@@ -6102,11 +6153,22 @@ def main() -> int:
     splash = SplashScreen(dp_dir)
     splash.show()
 
-    def start_mainwindow(_status: dict) -> None:
+    def start_mainwindow(status: dict) -> None:
         splash.close()
+        # Windows, first run without Install-CODOC.ps1: the splash installed the essential packages after this
+        # process had already tried to import them, so restart once to open with everything loaded.
+        if IS_WINDOWS and status.get("essentials_installed_now") and not os.environ.get("CODOC_RESTARTED"):
+            from MODULES.module_requirements import restart_codoc
+            if restart_codoc():
+                app.quit()
+                return
         window = MainWindow()
         window.show()
         app._main_window = window
+        if os.environ.get("CODOC_OPEN_REQUIREMENTS") == "1":
+            # set by Install-CODOC.ps1 on the first start: the program needs the rest of its libraries
+            os.environ.pop("CODOC_OPEN_REQUIREMENTS", None)
+            QTimer.singleShot(600, window.show_requirements_installer)
 
     splash.check_complete.connect(start_mainwindow)
     QTimer.singleShot(0, splash.start_checks)

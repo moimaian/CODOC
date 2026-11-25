@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from MODULES import platform_utils
+
 PDB2PQR_FORCEFIELD = "AMBER"
 
 _IONIZABLE_RESIDUES = {"ASP", "GLU", "HIS", "CYS", "TYR", "LYS", "ARG", "N+", "C-"}
@@ -62,11 +64,18 @@ def _which_or_none(name: str) -> Optional[str]:
     return shutil.which(name)
 
 
+def _venv_scripts_dir() -> str:
+    """Pasta dos executáveis do venv do CODOC (Scripts\\ no Windows, bin/ no Linux)."""
+    return platform_utils.venv_scripts_dir(platform_utils.default_venv_dir())
+
+
 def find_pdb2pqr(venv_bin_dir: Optional[str] = None) -> str:
     candidates: List[Optional[str]] = []
-    if venv_bin_dir:
-        candidates.append(os.path.join(venv_bin_dir, "pdb2pqr30"))
-        candidates.append(os.path.join(venv_bin_dir, "pdb2pqr"))
+    venv_bin_dir = venv_bin_dir or _venv_scripts_dir()
+    suffixes = ("", ".exe") if platform_utils.IS_WINDOWS else ("",)
+    for suffix in suffixes:
+        candidates.append(os.path.join(venv_bin_dir, "pdb2pqr30" + suffix))
+        candidates.append(os.path.join(venv_bin_dir, "pdb2pqr" + suffix))
     candidates.append(_which_or_none("pdb2pqr30"))
     candidates.append(_which_or_none("pdb2pqr"))
     for candidate in candidates:
@@ -80,14 +89,19 @@ def find_pdb2pqr(venv_bin_dir: Optional[str] = None) -> str:
 
 
 def find_prepare_receptor() -> str:
-    path = os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")
-    if not os.path.isfile(path):
-        raise TargetPrepareError(f"prepare_receptor was not found at {path}.")
+    path = platform_utils.find_adfr_prepare_receptor()
+    if path is None:
+        expected = os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")
+        raise TargetPrepareError(
+            f"prepare_receptor was not found at {expected}."
+            + (" Install ADFRsuite 1.0 (https://ccsb.scripps.edu/adfr/downloads/): CODOC also looks in the ADFRsuite "
+               "folders of Program Files." if platform_utils.IS_WINDOWS else "")
+        )
     return path
 
 
-def _run(cmd: List[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def _run(cmd: List[str], env: Optional[dict] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
 
 
 def _normalize_to_pdb(input_path: str, work_dir: str) -> str:
@@ -99,7 +113,7 @@ def _normalize_to_pdb(input_path: str, work_dir: str) -> str:
     """
     if Path(input_path).suffix.lower() in (".pdb", ".ent"):
         return input_path
-    obabel = _which_or_none("obabel")
+    obabel = platform_utils.find_obabel()
     if not obabel:
         raise TargetPrepareError(
             f"Open Babel ('obabel') is required to convert {input_path} to PDB before protonation."
@@ -300,25 +314,30 @@ def find_p2rank(search_root: Optional[str] = None) -> Optional[str]:
     """
     env_home = os.environ.get("P2RANK_HOME")
     if env_home:
-        candidate = Path(env_home) / "prank"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        for launcher in platform_utils.p2rank_launcher_names():
+            candidate = Path(env_home) / launcher
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
 
-    found = _which_or_none("prank")
-    if found:
-        return found
+    for launcher in platform_utils.p2rank_launcher_names():
+        found = _which_or_none(launcher)
+        if found:
+            return found
 
     search_bases = []
     if search_root:
         search_bases.append(Path(search_root) / "BIN")
-    search_bases.extend([Path.home(), Path("/opt")])
+    search_bases.append(Path.home())
+    if not platform_utils.IS_WINDOWS:
+        search_bases.append(Path("/opt"))
     for base in search_bases:
         if not base.is_dir():
             continue
         try:
-            for candidate in sorted(base.glob("p2rank*/prank")):
-                if candidate.is_file() and os.access(candidate, os.X_OK):
-                    return str(candidate)
+            for launcher in platform_utils.p2rank_launcher_names():
+                for candidate in sorted(base.glob(f"p2rank*/{launcher}")):
+                    if candidate.is_file() and os.access(candidate, os.X_OK):
+                        return str(candidate)
         except OSError:
             continue
     return None
@@ -354,7 +373,7 @@ def detect_pockets_p2rank(
     prank = find_p2rank(search_root)
     if prank is None:
         raise TargetPrepareError(P2RANK_INSTALL_HINT)
-    if _which_or_none("java") is None and not os.environ.get("JAVA_HOME"):
+    if platform_utils.find_java() is None:
         raise TargetPrepareError(P2RANK_JAVA_HINT)
 
     work_dir = tempfile.mkdtemp(prefix="codoc_p2rank_")
@@ -369,7 +388,7 @@ def detect_pockets_p2rank(
             pdb_for_p2rank = renamed
 
         out_dir = os.path.join(work_dir, "p2rank_out")
-        result = _run([prank, "predict", "-f", pdb_for_p2rank, "-o", out_dir])
+        result = _run([prank, "predict", "-f", pdb_for_p2rank, "-o", out_dir], env=platform_utils.java_environment())
         if result.returncode != 0:
             tail = "\n".join((result.stdout or "").strip().splitlines()[-6:])
             raise TargetPrepareError(

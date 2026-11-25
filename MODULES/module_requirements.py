@@ -14,9 +14,31 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, List, Optional, cast
 
-TARGET_VENV_PYTHON = "3.10.12"
+from MODULES import platform_utils
+from MODULES.platform_utils import IS_WINDOWS
+
+platform_utils.install_subprocess_defaults()      # Windows: filhos sem janela de console (no-op no Linux)
+
+# Python exato do venv. No Linux é compilado pelo pyenv (3.10.12); no Windows vem do instalador
+# oficial do python.org, e a 3.10.11 é a última 3.10 que ele distribui com instalador binário.
+TARGET_VENV_PYTHON_LINUX = "3.10.12"
+TARGET_VENV_PYTHON_WINDOWS = "3.10.11"
+TARGET_VENV_PYTHON = TARGET_VENV_PYTHON_WINDOWS if IS_WINDOWS else TARGET_VENV_PYTHON_LINUX
+PYTHON_WINDOWS_INSTALLER_URL = (
+    f"https://www.python.org/ftp/python/{TARGET_VENV_PYTHON_WINDOWS}/"
+    f"python-{TARGET_VENV_PYTHON_WINDOWS}-amd64.exe"
+)
+PYTHON_WINGET_ID = "Python.Python.3.10"
+# Windows: runtime Visual C++ que as DLLs do Qt5 (PyQt5), do NumPy e do RDKit exigem.
+VCREDIST_WINGET_ID = "Microsoft.VCRedist.2015+.x64"
+VCREDIST_DOWNLOAD_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+JAVA_WINGET_ID = "Microsoft.OpenJDK.17"
+OPENBABEL_PIP_SPEC = "openbabel-wheel>=3.1"        # Windows: obabel.exe vem no pacote pip, em Scripts\
+# Códigos de saída do winget que também significam "já está instalado" (PACKAGE_ALREADY_INSTALLED e
+# UPDATE_NOT_APPLICABLE); quem chama confere o resultado depois.
+_WINGET_ALREADY_OK = {0, 0x8A150061 - (1 << 32), 0x8A15010D - (1 << 32)}
 APP_NAME = "CODOC"
 APP_DIR_NAME = "CODOC"
 BOOST_VERSION = "1.84.0"
@@ -96,8 +118,29 @@ CODOC_TOOL_DEFAULTS = {
     "P2Rank": ("p2rank", P2RANK_VERSION),
 }
 
-VINA_URL = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/vina_1.2.5_linux_x86_64"
-VINA_SPLIT_URL = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/vina_split_1.2.5_linux_x86_64"
+
+def tool_defaults() -> dict[str, tuple[str, str]]:
+    """Programas externos que o sistema atual precisa instalar. No Windows não há Boost: o Vina-GPU vem
+    do zip com os executáveis já compilados."""
+    if IS_WINDOWS:
+        return {name: value for name, value in CODOC_TOOL_DEFAULTS.items() if value[0] != "boost"}
+    return dict(CODOC_TOOL_DEFAULTS)
+
+
+def system_package_rows() -> list[tuple[str, str, str]]:
+    """(nome exibido, pacote/especificação, tipo) das linhas de pacotes do sistema de External Programs:
+    Linux -> pacotes do apt; Windows -> o equivalente (winget, pip no venv ou o instalador da Microsoft)."""
+    if IS_WINDOWS:
+        return [
+            ("Open Babel (obabel)", OPENBABEL_PIP_SPEC, "pip"),
+            ("Java JRE 17 (P2Rank)", JAVA_WINGET_ID, "winget"),
+            ("Visual C++ runtime (Qt5)", VCREDIST_WINGET_ID, "vcredist"),
+        ]
+    return [(name, _system_package_spec(package), "apt") for name, package in CODOC_SYSTEM_DEFAULTS.items()]
+
+VINA_RELEASE_URL = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5"
+VINA_URL = f"{VINA_RELEASE_URL}/{platform_utils.vina_binary_names()[0]}"
+VINA_SPLIT_URL = f"{VINA_RELEASE_URL}/{platform_utils.vina_binary_names()[1]}"
 P2RANK_URL = f"https://github.com/rdk/p2rank/releases/download/{P2RANK_VERSION}/p2rank_{P2RANK_VERSION}.tar.gz"
 VINA_GPU_ARCHIVE = "Vina-GPU-2.1.zip"
 BOOST_ARCHIVE = "boost_1_84_0.tar.gz"
@@ -204,6 +247,33 @@ def _which(name: str) -> Optional[str]:
     return shutil.which(name)
 
 
+def _assume_yes() -> bool:
+    """CODOC_ASSUME_YES=1 (definida pelo Install-CODOC.ps1 / CODOC_Windows.bat): responde "S" sozinho às
+    confirmações do bootstrap, para o usuário do Windows não precisar digitar nada num terminal."""
+    return os.environ.get("CODOC_ASSUME_YES") == "1"
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+def _prompt_yes_no(message: str, default_yes: bool = True) -> bool:
+    if _assume_yes() or not _stdin_is_tty():
+        print(f"{message} -> Y")
+        return True
+    suffix = "[S/n]" if default_yes else "[s/N]"
+    try:
+        answer = input(f"{message} {suffix}: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    if not answer:
+        return default_yes
+    return answer in ("s", "sim", "y", "yes")
+
+
 def _apt_candidate_version(package_name: str) -> Optional[str]:
     apt_cache = _which("apt-cache")
     if not apt_cache:
@@ -229,6 +299,263 @@ def _system_package_spec(package_name: str) -> str:
 def _has_module(pybin: str, module_name: str) -> bool:
     result = _run([pybin, "-c", f"import {module_name}"])
     return result.returncode == 0
+
+
+# ----------------------------------------------------------------------------- Windows
+def _winget_available() -> bool:
+    return IS_WINDOWS and _which("winget") is not None
+
+
+def _winget_install(pkg_id: str, extra: Optional[list] = None) -> bool:
+    """winget install -e --id <pkg_id> ...; True se instalou ou se já estava instalado."""
+    command = ["winget", "install", "--id", pkg_id, "-e", "--silent",
+               "--accept-package-agreements", "--accept-source-agreements"] + list(extra or [])
+    print(f"[{APP_NAME}] " + " ".join(command))
+    code = _run(command).returncode
+    if code > 0x7FFFFFFF:
+        code -= 1 << 32
+    return code in _WINGET_ALREADY_OK
+
+
+def _download_file(url: str, destination: str) -> bool:
+    """Download só com a biblioteca padrão (o Windows não tem wget)."""
+    import urllib.request
+
+    try:
+        print(f"[{APP_NAME}] Downloading {url}")
+        urllib.request.urlretrieve(url, destination)
+        return os.path.isfile(destination) and os.path.getsize(destination) > 0
+    except Exception as exc:
+        print(f"[{APP_NAME}] Download failed: {url}: {exc}")
+        return False
+
+
+def _vcredist_installed() -> bool:
+    """True se o runtime Visual C++ 2015-2022 (x64) está instalado (chave de registro do instalador)."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        import winreg
+    except ImportError:
+        return True
+    for key in (r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64",
+                r"SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as handle:
+                if int(winreg.QueryValueEx(handle, "Installed")[0]) == 1:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def ensure_vcredist_windows() -> bool:
+    """Garante o runtime Visual C++ (x64) que as DLLs do Qt5 exigem: sem ele o import do PyQt5 falha com
+    "DLL load failed". Usa o winget e, sem ele, o instalador oficial da Microsoft; o Windows pede a
+    confirmação de administrador (UAC) uma vez."""
+    if not IS_WINDOWS or _vcredist_installed():
+        return True
+    print(f"[{APP_NAME}] Visual C++ runtime (x64) not found - the Qt5 libraries need it. Installing...")
+    ok = _winget_install(VCREDIST_WINGET_ID) if _winget_available() else False
+    if not ok and not _vcredist_installed():
+        installer = os.path.join(tempfile.gettempdir(), "codoc_vc_redist.x64.exe")
+        if _download_file(VCREDIST_DOWNLOAD_URL, installer):
+            # 1638: já há uma versão mais nova; 3010: pede reinício do Windows
+            ok = _run([installer, "/install", "/quiet", "/norestart"]).returncode in (0, 1638, 3010)
+    if _vcredist_installed() or ok:
+        print(f"[{APP_NAME}] Visual C++ runtime available.")
+        return True
+    print(f"[{APP_NAME}] Could not install the Visual C++ runtime. Install it by hand:\n"
+          f"         winget install --id {VCREDIST_WINGET_ID} -e\n         or {VCREDIST_DOWNLOAD_URL}")
+    return False
+
+
+def _windows_python_candidates() -> List[str]:
+    """Pythons 3.10 prováveis no Windows (py launcher, pastas padrão dos instaladores, PATH)."""
+    found: List[str] = []
+    if _which("py"):
+        result = _run(["py", "-3.10", "-c", "import sys; print(sys.executable)"])
+        if result.returncode == 0 and result.stdout.strip():
+            found.append(result.stdout.strip().splitlines()[-1])
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        found.append(os.path.join(local, "Programs", "Python", "Python310", "python.exe"))
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(variable, "")
+        if base:
+            found.append(os.path.join(base, "Python310", "python.exe"))
+    for name in ("python", "python3"):
+        path = _which(name)
+        if path:
+            found.append(path)
+    found.append(sys.executable)
+    unique: List[str] = []
+    seen = set()
+    for path in found:
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen and os.path.isfile(path):
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _find_windows_python(version: str) -> Optional[str]:
+    for path in _windows_python_candidates():
+        if _python_version_string(path) == version:
+            return path
+    return None
+
+
+def ensure_python310_windows(version: str = TARGET_VENV_PYTHON_WINDOWS) -> str:
+    """Windows: devolve o python.exe da versão exata (3.10.11). Se não existir, instala pelo winget
+    (--scope user) ou, sem winget, pelo instalador do python.org (por usuário, sem administrador)."""
+    found = _find_windows_python(version)
+    if found:
+        return found
+    print(f"[{APP_NAME}] Python {version} was not found on this Windows.")
+    if not _prompt_yes_no(f"[{APP_NAME}] Install Python {version} now?"):
+        raise RuntimeError(f"Python {version} is required to create the {APP_NAME} environment.")
+    if _winget_available():
+        _winget_install(PYTHON_WINGET_ID, ["--version", version, "--scope", "user"])
+        found = _find_windows_python(version)
+        if found:
+            return found
+    installer = os.path.join(tempfile.gettempdir(), f"python-{version}-amd64.exe")
+    if _download_file(PYTHON_WINDOWS_INSTALLER_URL, installer):
+        _run([installer, "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_launcher=0",
+              "Include_test=0", "Include_pip=1"])
+        found = _find_windows_python(version)
+        if found:
+            return found
+    raise RuntimeError(
+        f"Could not install Python {version}. Install it by hand and start {APP_NAME} again:\n"
+        f"  winget install --id {PYTHON_WINGET_ID} -e --version {version}\n"
+        f"  or {PYTHON_WINDOWS_INSTALLER_URL}"
+    )
+
+
+def _windows_known_folder(csidl: int) -> str:
+    """Pasta especial do Windows (Área de Trabalho, Menu Iniciar), mesmo redirecionada pelo OneDrive."""
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buffer) == 0 and buffer.value:  # type: ignore[attr-defined]
+            return buffer.value
+    except Exception:
+        pass
+    return ""
+
+
+_SHORTCUT_POWERSHELL = r"""
+$ErrorActionPreference = 'Stop'
+$shell = New-Object -ComObject WScript.Shell
+foreach ($path in ($env:CODOC_LNK_PATHS -split '\|')) {
+  if (-not $path) { continue }
+  $link = $shell.CreateShortcut($path)
+  $link.TargetPath = $env:CODOC_LNK_TARGET
+  $q = [char]34
+  $link.Arguments = '-X utf8 ' + $q + $env:CODOC_LNK_SCRIPT + $q
+  $link.WorkingDirectory = $env:CODOC_LNK_WORKDIR
+  $link.Description = 'CODOC - Computational Molecular Docking Platform'
+  if ($env:CODOC_LNK_ICON -and (Test-Path $env:CODOC_LNK_ICON)) { $link.IconLocation = $env:CODOC_LNK_ICON }
+  $link.Save()
+}
+"""
+
+
+def windows_shortcut_paths() -> List[str]:
+    """Onde ficam os atalhos CODOC.lnk: Área de Trabalho e Menu Iniciar > Programas."""
+    paths = []
+    for csidl in (0x10, 0x02):          # CSIDL_DESKTOPDIRECTORY, CSIDL_PROGRAMS
+        folder = _windows_known_folder(csidl)
+        if folder:
+            paths.append(os.path.join(folder, "CODOC.lnk"))
+    return paths
+
+
+def ensure_windows_shortcuts(script_path: str, env_name: str = APP_NAME, force: bool = False) -> bool:
+    """Cria/atualiza CODOC.lnk na Área de Trabalho e no Menu Iniciar. O atalho abre o CODOC.py com o
+    pythonw.exe do venv (sem janela de console; a saída vai para Help > Terminal). Só recria quando
+    falta um atalho ou o destino mudou. Devolve True se os atalhos existem."""
+    if not IS_WINDOWS:
+        return False
+    paths = venv_paths(env_name)
+    target = paths["pythonw"] if os.path.isfile(paths["pythonw"]) else paths["python"]
+    if not os.path.isfile(target):
+        return False
+    script = os.path.abspath(script_path)
+    app_dir = os.path.dirname(script)
+    icon = os.path.join(app_dir, "ICONS", "CODOC.ico")
+    links = windows_shortcut_paths()
+    if not links:
+        return False
+    signature = "\n".join([target, script, icon if os.path.isfile(icon) else ""] + links)
+    marker = os.path.join(paths["venv_dir"], ".codoc_shortcuts")
+    try:
+        current = Path(marker).read_text(encoding="utf-8")
+    except Exception:
+        current = ""
+    if not force and current == signature and all(os.path.isfile(link) for link in links):
+        return True
+    environment = os.environ.copy()
+    environment.update({
+        "CODOC_LNK_PATHS": "|".join(links),
+        "CODOC_LNK_TARGET": target,
+        "CODOC_LNK_SCRIPT": script,
+        "CODOC_LNK_WORKDIR": app_dir,
+        "CODOC_LNK_ICON": icon if os.path.isfile(icon) else "",
+    })
+    try:
+        result = _run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                       "-Command", _SHORTCUT_POWERSHELL], env=environment)
+    except Exception as exc:
+        print(f"[{APP_NAME}] Could not create the shortcuts: {exc}")
+        return False
+    if result.returncode != 0:
+        print(f"[{APP_NAME}] Could not create the CODOC.lnk shortcuts:\n{result.stdout}")
+        return False
+    try:
+        Path(marker).write_text(signature, encoding="utf-8")
+    except Exception:
+        pass
+    print(f"[{APP_NAME}] CODOC.lnk shortcuts created on the Desktop and in the Start Menu.")
+    return all(os.path.isfile(link) for link in links)
+
+
+def codoc_script_path() -> str:
+    """CODOC.py (pai da pasta MODULES/ deste módulo)."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CODOC.py")
+
+
+def restart_codoc() -> bool:
+    """Reinicia o CODOC num processo novo, para importar as bibliotecas recém-instaladas (o import delas
+    acontece uma única vez, na inicialização). Linux: substitui o processo (execve) e não retorna.
+    Windows: inicia o novo processo destacado, com pythonw.exe, e devolve True - quem chamou encerra o atual.
+    CODOC_RESTARTED=1 impede um laço de reinícios."""
+    script = codoc_script_path()
+    if not os.path.isfile(script):
+        return False
+    environment = os.environ.copy()
+    environment["CODOC_RESTARTED"] = "1"
+    environment["CODOC_VENV_ACTIVE"] = "1"
+    arguments = [sys.executable, script] + [a for a in sys.argv[1:] if a != "--setup"]
+    print(f"[{APP_NAME}] Restarting to load the installed libraries...")
+    try:
+        if IS_WINDOWS:
+            pythonw = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "pythonw.exe")
+            if os.path.isfile(pythonw):
+                arguments[0] = pythonw
+            environment["PYTHONUTF8"] = "1"
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen(arguments, env=environment, cwd=os.path.dirname(script), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+            return True
+        os.execve(sys.executable, arguments, environment)
+    except Exception as exc:
+        print(f"[{APP_NAME}] Could not restart: {exc}")
+    return False
+
 
 
 def _python_version_string(pybin: str) -> Optional[str]:
@@ -283,11 +610,16 @@ def venv_paths(env_name: str = APP_NAME) -> dict[str, str]:
     home = str(Path.home())
     app_dir = os.path.join(home, APP_DIR_NAME)
     venv_dir = os.path.join(home, ".venv", env_name)
+    scripts = platform_utils.venv_scripts_dir(venv_dir)       # Windows: Scripts\ ; Linux: bin/
+    suffix = ".exe" if IS_WINDOWS else ""
+    python = os.path.join(scripts, "python" + suffix)
     return {
         "app_dir": app_dir,
         "venv_dir": venv_dir,
-        "python": os.path.join(venv_dir, "bin", "python"),
-        "pip": os.path.join(venv_dir, "bin", "pip"),
+        "python": python,
+        "pip": os.path.join(scripts, "pip" + suffix),
+        # Windows: pythonw.exe abre a interface sem janela de console (o atalho usa este)
+        "pythonw": os.path.join(scripts, "pythonw.exe") if IS_WINDOWS else python,
     }
 
 
@@ -301,6 +633,8 @@ def _os_release_text() -> str:
 def _has_controlling_terminal() -> bool:
     """True when sudo can ask for a password on a terminal. CODOC started from the menu has none
     (its launcher is Terminal=false), so a plain `sudo` would just fail there."""
+    if IS_WINDOWS:
+        return sys.stdin is not None and sys.stdin.isatty()
     try:
         with open("/dev/tty"):
             return True
@@ -363,6 +697,8 @@ def ensure_python310_with_pyenv(version: str = TARGET_VENV_PYTHON) -> str:
 def _pick_python_for_venv() -> str:
     if _is_target_python(sys.executable):
         return sys.executable
+    if IS_WINDOWS:
+        return ensure_python310_windows(TARGET_VENV_PYTHON)
     candidate = _which("python3.10")
     if candidate and _is_target_python(candidate):
         return candidate
@@ -372,6 +708,8 @@ def _pick_python_for_venv() -> str:
 def ensure_venv(env_name: str = APP_NAME) -> dict[str, str]:
     paths = venv_paths(env_name)
     os.makedirs(paths["app_dir"], exist_ok=True)
+    if IS_WINDOWS:
+        ensure_vcredist_windows()        # as DLLs do Qt5 precisam do runtime Visual C++
 
     recreate = False
     if os.path.isdir(paths["venv_dir"]) and os.path.isfile(paths["python"]):
@@ -398,7 +736,12 @@ def ensure_venv(env_name: str = APP_NAME) -> dict[str, str]:
 
 def _running_in_target_venv(env_name: str = APP_NAME) -> bool:
     try:
-        return Path(sys.executable).resolve() == Path(venv_paths(env_name)["python"]).resolve()
+        paths = venv_paths(env_name)
+        if IS_WINDOWS:
+            # o atalho abre o CODOC com pythonw.exe (sem console): é o mesmo venv que python.exe
+            allowed = {os.path.normcase(os.path.abspath(paths["python"])), os.path.normcase(os.path.abspath(paths["pythonw"]))}
+            return os.path.normcase(os.path.abspath(sys.executable)) in allowed
+        return Path(sys.executable).resolve() == Path(paths["python"]).resolve()
     except Exception:
         return False
 
@@ -407,7 +750,22 @@ def bootstrap_pyqt5(interactive: bool = True, reexec: bool = False, env_name: st
     if os.environ.get(f"{env_name}_VENV_ACTIVE") == "1" and _running_in_target_venv(env_name):
         return True
 
+    if IS_WINDOWS and _running_in_target_venv(env_name) and _has_module(venv_paths(env_name)["python"], "PyQt5"):
+        # Windows: já dentro do venv (atalho/pythonw). Marca o ambiente para que os processos filhos
+        # (multiprocessing "spawn" reimporta o CODOC.py) não repitam o bootstrap.
+        os.environ[f"{env_name}_VENV_ACTIVE"] = "1"
+        return True
+
     target_paths = venv_paths(env_name)
+    if interactive and not _running_in_target_venv(env_name) and not _stdin_is_tty() and not _assume_yes():
+        # Sem terminal para responder à pergunta: com o venv pronto basta reiniciar dentro dele;
+        # sem venv, a configuração inicial precisa de um terminal (no Windows: o CODOC_Windows.bat).
+        if not (os.path.isdir(target_paths["venv_dir"]) and os.path.isfile(target_paths["python"])):
+            print(f"[{APP_NAME}] The first run needs a terminal to set up the environment "
+                  f"({target_paths['venv_dir']}). Run 'python CODOC.py' in a terminal"
+                  + (" or double-click CODOC_Windows.bat." if IS_WINDOWS else "."))
+            return False
+        interactive = False
     if interactive and not _running_in_target_venv(env_name):
         print("\n" + "═" * 62)
         print(f"  {APP_NAME} — Python Environment Setup")
@@ -416,12 +774,15 @@ def bootstrap_pyqt5(interactive: bool = True, reexec: bool = False, env_name: st
         print(f"  Version        : {sys.version.split()[0]}")
         print(f"  Target venv    : {target_paths['venv_dir']}")
         print(f"  Target Python  : {TARGET_VENV_PYTHON}")
-        try:
-            response = input("  Continue? [S/n]: ").strip().lower()
-            if response in ("n", "nao", "não", "no"):
+        if _assume_yes():
+            print("  Continue? [S/n]: S")
+        else:
+            try:
+                response = input("  Continue? [S/n]: ").strip().lower()
+                if response in ("n", "nao", "não", "no"):
+                    return False
+            except (EOFError, KeyboardInterrupt):
                 return False
-        except (EOFError, KeyboardInterrupt):
-            return False
 
     paths = ensure_venv(env_name)
     _ensure_rdkit_numpy_compat(paths["python"])
@@ -432,13 +793,45 @@ def bootstrap_pyqt5(interactive: bool = True, reexec: bool = False, env_name: st
             return False
 
     if reexec:
-        current_python = os.path.realpath(sys.executable)
-        target_python = os.path.realpath(paths["python"])
+        current_python = os.path.normcase(os.path.realpath(sys.executable))
+        target_python = os.path.normcase(os.path.realpath(paths["python"]))
         if current_python != target_python:
             env = os.environ.copy()
             env[f"{env_name}_VENV_ACTIVE"] = "1"
+            if IS_WINDOWS:
+                # O Windows não tem exec(): os.execve criaria um processo novo e encerraria este logo em
+                # seguida, soltando o terminal. Executa o filho (pythonw sem terminal) e espera.
+                env["PYTHONUTF8"] = "1"
+                exe = paths["python"] if _stdin_is_tty() or not os.path.isfile(paths["pythonw"]) else paths["pythonw"]
+                sys.exit(subprocess.call([exe] + sys.argv, env=env))
             os.execve(paths["python"], [paths["python"]] + sys.argv, env)
     return True
+
+
+def run_setup() -> int:
+    """`python CODOC.py --setup` (usado pelo Install-CODOC.ps1): prepara tudo sem abrir a interface -
+    venv, runtime Visual C++, pacotes essenciais e, no Windows, os atalhos CODOC.lnk. Devolve 0 se deu certo."""
+    try:
+        paths = ensure_venv(APP_NAME)
+        _ensure_rdkit_numpy_compat(paths["python"])
+        packages = [PYTHON_PACKAGES["PyQt5"], PYTHON_PACKAGES["pandas"], PYTHON_PACKAGES["psutil"]]
+        print(f"[{APP_NAME}] Installing the essential packages: {', '.join(packages)}")
+        result = install_python_packages(paths["python"], packages)
+        if result.returncode != 0:
+            print(result.stdout)
+            return 1
+        Path(os.path.join(paths["venv_dir"], ".codoc_minimal_done")).write_text("ok", encoding="utf-8")
+        if IS_WINDOWS:
+            try:        # the Windows build of AutoDock Vina 1.2.5 (about 2 MB): CPU docking works right after the setup
+                ensure_vina_binaries(os.path.join(os.path.dirname(codoc_script_path()), "BIN"))
+            except Exception as exc:
+                print(f"[{APP_NAME}] AutoDock Vina was not downloaded ({exc}); tick it in Install Requirements.")
+            ensure_windows_shortcuts(codoc_script_path(), force=True)
+        print(f"[{APP_NAME}] Setup finished: {paths['venv_dir']}")
+        return 0
+    except Exception as exc:
+        print(f"[{APP_NAME}] Setup failed: {exc}")
+        return 1
 
 
 def install_python_packages(pybin: str, packages: list[str]) -> subprocess.CompletedProcess[str]:
@@ -457,6 +850,12 @@ def _require_commands(commands: list[str], apt_package: str, needed_for: str) ->
 
 
 def _download(url: str, destination: str, label: str) -> None:
+    if IS_WINDOWS:                                 # o Windows não tem wget
+        if not _download_file(url, destination):
+            if os.path.isfile(destination):
+                os.remove(destination)
+            raise RuntimeError(f"Failed to download {label} from {url}")
+        return
     _require_commands(["wget"], "wget", f"to download {label}")
     result = _run(["wget", "-O", destination, url])
     if result.returncode != 0 or not os.path.isfile(destination):
@@ -467,16 +866,17 @@ def _download(url: str, destination: str, label: str) -> None:
 
 def ensure_vina_binaries(bin_dir: str) -> str:
     os.makedirs(bin_dir, exist_ok=True)
-    vina_path = os.path.join(bin_dir, "vina_1.2.5_linux_x86_64")
-    vina_split_path = os.path.join(bin_dir, "vina_split_1.2.5_linux_x86_64")
+    vina_path, vina_split_path = platform_utils.vina_binary_paths(bin_dir)     # Windows: vina_1.2.5_win.exe
 
     if not os.path.isfile(vina_path):
         _download(VINA_URL, vina_path, "vina")
-        os.chmod(vina_path, 0o755)
+        if not IS_WINDOWS:
+            os.chmod(vina_path, 0o755)
 
     if not os.path.isfile(vina_split_path):
         _download(VINA_SPLIT_URL, vina_split_path, "vina_split")
-        os.chmod(vina_split_path, 0o755)
+        if not IS_WINDOWS:
+            os.chmod(vina_split_path, 0o755)
 
     return vina_path
 
@@ -571,7 +971,7 @@ def ensure_boost_installation(app_dir: str) -> str:
 
 def get_java_version() -> Optional[str]:
     """Version of the Java runtime on the PATH ("17.0.21"), None when there is none."""
-    java = _which("java")
+    java = platform_utils.find_java()
     if not java:
         return None
     result = _run([java, "-version"])
@@ -590,7 +990,7 @@ def java_major(version: str) -> int:
 
 def p2rank_paths(home_dir: Optional[str] = None) -> dict[str, str]:
     install_dir = os.path.join(home_dir or str(Path.home()), f"p2rank_{P2RANK_VERSION}")
-    return {"install_dir": install_dir, "launcher": os.path.join(install_dir, "prank")}
+    return {"install_dir": install_dir, "launcher": os.path.join(install_dir, platform_utils.p2rank_launcher_names()[0])}
 
 
 def get_p2rank_version(app_dir: Optional[str] = None) -> Optional[str]:
@@ -619,10 +1019,11 @@ def ensure_p2rank_installation(app_dir: str) -> str:
         _download(P2RANK_URL, archive_path, f"P2Rank {P2RANK_VERSION} (about 280 MB)")
         shutil.unpack_archive(archive_path, temp_dir)
         extracted_dir = os.path.join(temp_dir, f"p2rank_{P2RANK_VERSION}")
-        if not os.path.isfile(os.path.join(extracted_dir, "prank")):
-            raise RuntimeError(f"Could not locate p2rank_{P2RANK_VERSION}/prank inside the downloaded archive.")
+        if not os.path.isfile(os.path.join(extracted_dir, platform_utils.p2rank_launcher_names()[0])):
+            raise RuntimeError(f"Could not locate p2rank_{P2RANK_VERSION}/{platform_utils.p2rank_launcher_names()[0]} inside the downloaded archive.")
         shutil.copytree(extracted_dir, paths["install_dir"])
-    os.chmod(paths["launcher"], 0o755)
+    if not IS_WINDOWS:
+        os.chmod(paths["launcher"], 0o755)
     return paths["launcher"]
 
 
@@ -630,8 +1031,10 @@ def vina_gpu_paths(home_dir: Optional[str] = None) -> dict[str, str]:
     home_path = home_dir or str(Path.home())
     install_root = os.path.join(home_path, "Vina-GPU-2.1")
     install_dir = os.path.join(install_root, "AutoDock-Vina-GPU-2.1")
-    executable = os.path.join(install_dir, "AutoDock-Vina-GPU-2-1")
-    source_executable = os.path.join(install_dir, "AutoDock-Vina-GPU-2-1_source")
+    # Windows: o zip traz Vina-GPU+.exe (kernels já compilados) e Vina-GPU+_K.exe (compila os kernels ao
+    # rodar); o Linux compila o seu próprio binário (ver _rebuild_vina_gpu).
+    executable = os.path.join(install_dir, "Vina-GPU+.exe" if IS_WINDOWS else "AutoDock-Vina-GPU-2-1")
+    source_executable = os.path.join(install_dir, "Vina-GPU+_K.exe" if IS_WINDOWS else "AutoDock-Vina-GPU-2-1_source")
     makefile = os.path.join(install_dir, "Makefile")
     return {
         "root": install_root,
@@ -646,6 +1049,9 @@ def get_vina_gpu_version(executable: Optional[str] = None) -> Optional[str]:
     vina_gpu = executable or vina_gpu_paths()["executable"]
     if not os.path.isfile(vina_gpu):
         return None
+    if IS_WINDOWS:
+        # o executável do Windows é o da distribuição original: não imprime a versão com --version
+        return "AutoDock-Vina-GPU 2.1 (Windows build)"
     result = _run([vina_gpu, "--version"])
     if result.returncode != 0:
         return None
@@ -656,10 +1062,84 @@ def get_vina_gpu_version(executable: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def _detect_opencl_ctypes() -> list[dict[str, Any]]:
+    """Lista plataformas e dispositivos OpenCL chamando a própria biblioteca OpenCL (OpenCL.dll no Windows,
+    libOpenCL.so no Linux), sem o clinfo - que não existe no Windows. Mesmos campos do detect_opencl_devices."""
+    import ctypes
+
+    library = None
+    for name in (["OpenCL.dll"] if IS_WINDOWS else ["libOpenCL.so.1", "libOpenCL.so"]):
+        try:
+            library = ctypes.WinDLL(name) if IS_WINDOWS else ctypes.CDLL(name)   # type: ignore[attr-defined]
+            break
+        except OSError:
+            continue
+    if library is None:
+        return []
+
+    void_p, uint, ulong, size_t = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_size_t
+    # Without argtypes ctypes passes every integer as a 32-bit int, which corrupts the 64-bit sizes and pointers.
+    library.clGetPlatformIDs.argtypes = [uint, ctypes.POINTER(void_p), ctypes.POINTER(uint)]
+    library.clGetPlatformInfo.argtypes = [void_p, uint, size_t, void_p, ctypes.POINTER(size_t)]
+    library.clGetDeviceIDs.argtypes = [void_p, ulong, uint, ctypes.POINTER(void_p), ctypes.POINTER(uint)]
+    library.clGetDeviceInfo.argtypes = [void_p, uint, size_t, void_p, ctypes.POINTER(size_t)]
+    for name in ("clGetPlatformIDs", "clGetPlatformInfo", "clGetDeviceIDs", "clGetDeviceInfo"):
+        getattr(library, name).restype = ctypes.c_int32
+
+    def text_info(function: Any, handle: Any, parameter: int) -> str:
+        size = size_t(0)
+        if function(handle, parameter, 0, None, ctypes.byref(size)) != 0 or not size.value:
+            return ""
+        buffer = ctypes.create_string_buffer(size.value)
+        if function(handle, parameter, size.value, ctypes.addressof(buffer), None) != 0:
+            return ""
+        return buffer.value.decode("utf-8", "replace").strip()
+
+    def number_info(handle: Any, parameter: int, kind: Any) -> int:
+        value = kind(0)
+        if library.clGetDeviceInfo(handle, parameter, ctypes.sizeof(value), ctypes.addressof(value), None) != 0:
+            return 0
+        return int(value.value)
+
+    count = uint(0)
+    if library.clGetPlatformIDs(0, None, ctypes.byref(count)) != 0 or not count.value:
+        return []
+    platforms = (void_p * count.value)()
+    library.clGetPlatformIDs(count.value, platforms, None)
+
+    devices: list[dict[str, Any]] = []
+    for platform_index, platform_handle in enumerate(platforms):
+        device_count = uint(0)
+        # CL_DEVICE_TYPE_ALL = 0xFFFFFFFF
+        if library.clGetDeviceIDs(platform_handle, 0xFFFFFFFF, 0, None, ctypes.byref(device_count)) != 0 or not device_count.value:
+            continue
+        handles = (void_p * device_count.value)()
+        library.clGetDeviceIDs(platform_handle, 0xFFFFFFFF, device_count.value, handles, None)
+        for device_index, device_handle in enumerate(handles):
+            device_type = number_info(device_handle, 0x1000, ulong)        # CL_DEVICE_TYPE
+            kind = "GPU" if device_type & 4 else "CPU" if device_type & 2 else "ACCELERATOR" if device_type & 8 else "Unknown"
+            devices.append({
+                "platform_id": platform_index,
+                "platform_name": text_info(library.clGetPlatformInfo, platform_handle, 0x0902) or f"Platform {platform_index}",
+                "platform_vendor": text_info(library.clGetPlatformInfo, platform_handle, 0x0903),
+                "platform_version": text_info(library.clGetPlatformInfo, platform_handle, 0x0901),
+                "device_id": device_index,
+                "device_name": text_info(library.clGetDeviceInfo, device_handle, 0x102B),   # CL_DEVICE_NAME
+                "device_type": kind,
+                "compute_units": number_info(device_handle, 0x1002, uint),                  # MAX_COMPUTE_UNITS
+                "clock_mhz": number_info(device_handle, 0x100C, uint),                      # MAX_CLOCK_FREQUENCY
+                "memory_bytes": number_info(device_handle, 0x101F, ulong),                  # GLOBAL_MEM_SIZE
+            })
+    return devices
+
+
 def detect_opencl_devices() -> list[dict[str, Any]]:
     clinfo = _which("clinfo")
     if not clinfo:
-        return []
+        try:
+            return _detect_opencl_ctypes()      # no Windows não há clinfo: pergunta à OpenCL.dll
+        except Exception:
+            return []
     result = _run([clinfo])
     if result.returncode != 0:
         return []
@@ -1003,6 +1483,50 @@ def _rebuild_vina_gpu(install_dir: str) -> None:
             raise RuntimeError(result.stdout or f"Failed running {' '.join(command)} in {install_dir}")
 
 
+def _prepare_vina_gpu_windows(install_dir: str) -> None:
+    """Windows: o zip do Vina-GPU 2.1 traz os executáveis já compilados (Vina-GPU+.exe e Vina-GPU+_K.exe),
+    de modo que não precisa de Visual Studio nem de Boost. O que falta é o kernel OpenCL da SUA placa:
+    os Kernel1_Opt.bin / Kernel2_Opt.bin do zip foram gerados para outra GPU. O Vina-GPU+_K.exe os compila
+    ao rodar um docking de exemplo (2bm2), e o Vina-GPU+.exe passa a usá-los."""
+    paths = vina_gpu_paths()
+    for key in ("executable", "source_executable"):
+        if not os.path.isfile(paths[key]):
+            raise RuntimeError(f"{os.path.basename(paths[key])} was not found in the Vina-GPU archive ({install_dir}).")
+    for name in ("Kernel1_Opt.bin", "Kernel2_Opt.bin"):
+        kernel = os.path.join(install_dir, name)
+        if os.path.isfile(kernel):
+            os.remove(kernel)
+    example = os.path.join(install_dir, "input_file_example")
+    receptor = os.path.join(example, "2bm2_protein.pdbqt")
+    ligand = os.path.join(example, "2bm2_ligand.pdbqt")
+    if not (os.path.isfile(receptor) and os.path.isfile(ligand)):
+        raise RuntimeError(f"The Vina-GPU example files were not found in {example}.")
+    with tempfile.TemporaryDirectory(prefix="codoc-vinagpu-kernels-") as work:
+        ligand_dir = os.path.join(work, "ligands")
+        output_dir = os.path.join(work, "out")
+        os.makedirs(ligand_dir)
+        os.makedirs(output_dir)
+        shutil.copy(ligand, ligand_dir)
+        config = os.path.join(work, "kernel_build.txt")
+        lines = [
+            f"receptor = {Path(receptor).as_posix()}",
+            f"ligand_directory = {Path(ligand_dir).as_posix()}",
+            f"output_directory = {Path(output_dir).as_posix()}",
+            f"opencl_binary_path = {Path(install_dir).as_posix()}",
+            "center_x = 40.415", "center_y = 110.986", "center_z = 82.673",
+            "size_x = 30", "size_y = 30", "size_z = 30", "thread = 8000",
+        ]
+        Path(config).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = _run([paths["source_executable"], "--config", config], cwd=install_dir)
+    missing = [n for n in ("Kernel1_Opt.bin", "Kernel2_Opt.bin") if not os.path.isfile(os.path.join(install_dir, n))]
+    if missing:
+        tail = "\n".join((result.stdout or "").strip().splitlines()[-8:])
+        raise RuntimeError(
+            "Vina-GPU could not build its OpenCL kernels for this GPU (" + ", ".join(missing) + " missing). "
+            "It needs a GPU with an up-to-date OpenCL driver (NVIDIA, AMD or Intel).\n" + tail
+        )
+
+
 def ensure_vina_gpu_installation(app_dir: str) -> str:
     paths = vina_gpu_paths()
     archive_path = os.path.join(app_dir, "BIN", VINA_GPU_ARCHIVE)
@@ -1024,7 +1548,10 @@ def ensure_vina_gpu_installation(app_dir: str) -> str:
                 shutil.rmtree(paths["install_dir"])
             shutil.copytree(str(extracted_dir), paths["install_dir"])
 
-    _rebuild_vina_gpu(paths["install_dir"])
+    if IS_WINDOWS:
+        _prepare_vina_gpu_windows(paths["install_dir"])
+    else:
+        _rebuild_vina_gpu(paths["install_dir"])
 
     for binary_path in (paths["executable"], paths["source_executable"]):
         if os.path.isfile(binary_path):
@@ -1045,8 +1572,8 @@ def detect_hardware() -> dict[str, Any]:
         "platform": platform.platform(),
         "cpu_count": os.cpu_count() or 1,
         "gpu_available": bool(_which("nvidia-smi")),
-        "openbabel": bool(_which("obabel")),
-        "adfr": os.path.isfile(os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")),
+        "openbabel": bool(platform_utils.find_obabel(venv_paths()["venv_dir"])),
+        "adfr": platform_utils.find_adfr_prepare_receptor() is not None,
     }
 
 
@@ -1113,22 +1640,24 @@ class RequirementsInstaller(cast(Any, QDialog)):
             self.python_rows.append((checkbox, version_edit, display_name))
         content_layout.addWidget(python_box)
 
-        system_box = QGroupBox("External Programs")
+        system_box = QGroupBox("External Programs" + (" (Windows)" if IS_WINDOWS else ""))
         system_layout = QGridLayout(system_box)
         system_layout.addWidget(QLabel("Install"), 0, 0)
         system_layout.addWidget(QLabel("Program"), 0, 1)
         system_layout.addWidget(QLabel("Version / spec"), 0, 2)
         row_idx = 1
-        for display_name, package_name in CODOC_SYSTEM_DEFAULTS.items():
+        self.system_kinds: dict[str, str] = {}
+        for display_name, package_spec, kind in system_package_rows():
             checkbox = QCheckBox()
             name_label = QLabel(display_name)
-            package_edit = QLineEdit(_system_package_spec(package_name))
+            package_edit = QLineEdit(package_spec)
+            self.system_kinds[display_name] = kind
             system_layout.addWidget(checkbox, row_idx, 0)
             system_layout.addWidget(name_label, row_idx, 1)
             system_layout.addWidget(package_edit, row_idx, 2)
             self.system_rows.append((checkbox, package_edit, display_name))
             row_idx += 1
-        for display_name, (tool_key, version) in CODOC_TOOL_DEFAULTS.items():
+        for display_name, (tool_key, version) in tool_defaults().items():
             checkbox = QCheckBox()
             checkbox.setChecked(tool_key == "vina")
             name_label = QLabel(display_name)
@@ -1179,7 +1708,7 @@ class RequirementsInstaller(cast(Any, QDialog)):
 
     def _install_selected(self) -> None:
         step = 0
-        pinned_tool_versions = {key: version for _name, (key, version) in CODOC_TOOL_DEFAULTS.items()}
+        pinned_tool_versions = {key: version for _name, (key, version) in tool_defaults().items()}
         try:
             paths = ensure_venv(APP_NAME)
             pybin = paths["python"]
@@ -1204,12 +1733,34 @@ class RequirementsInstaller(cast(Any, QDialog)):
                 if not checkbox.isChecked():
                     continue
                 package_name = package_edit.text().strip() or name
-                command = root_command(["apt-get", "install", "-y", package_name])
-                self.log_signal.emit(f"Running: {' '.join(command)}\n")
-                result = _run(command)
-                if result.returncode != 0:
-                    raise RuntimeError(result.stdout or f"Failed to install {package_name}")
-                self.log_signal.emit(result.stdout + "\n")
+                kind = self.system_kinds.get(name, "apt")
+                if kind == "apt":
+                    command = root_command(["apt-get", "install", "-y", package_name])
+                    self.log_signal.emit(f"Running: {' '.join(command)}\n")
+                    result = _run(command)
+                    if result.returncode != 0:
+                        raise RuntimeError(result.stdout or f"Failed to install {package_name}")
+                    self.log_signal.emit(result.stdout + "\n")
+                elif kind == "winget":
+                    if not _winget_available():
+                        raise RuntimeError(
+                            f"winget was not found (it comes with the Windows App Installer). Install {name} by hand: "
+                            f"winget install --id {package_name} -e"
+                        )
+                    self.log_signal.emit(f"Running: winget install --id {package_name} -e\n")
+                    if not _winget_install(package_name):
+                        raise RuntimeError(f"Failed to install {name} with winget (id {package_name}).")
+                    self.log_signal.emit(f"{name} installed.\n")
+                elif kind == "pip":
+                    self.log_signal.emit(f"Installing Python package: {name} -> {package_name}\n")
+                    result = install_python_packages(pybin, [package_name])
+                    if result.returncode != 0:
+                        raise RuntimeError(result.stdout or f"Failed to install {package_name}")
+                    self.log_signal.emit(result.stdout + "\n")
+                elif kind == "vcredist":
+                    if not ensure_vcredist_windows():
+                        raise RuntimeError("The Visual C++ runtime could not be installed (see the terminal output).")
+                    self.log_signal.emit("Visual C++ runtime available.\n")
                 step += 1
                 self.progress_signal.emit(step)
 
@@ -1233,12 +1784,17 @@ class RequirementsInstaller(cast(Any, QDialog)):
                     boost_version = get_boost_version() or "installed"
                     self.log_signal.emit(f"Boost installed at {boost_root}\nVersion: {boost_version}\n")
                 elif tool_key == "adfr":
-                    prepare_receptor = os.path.join(str(Path.home()), f"ADFRsuite-{pinned_version}", "bin", "prepare_receptor")
-                    if not os.path.isfile(prepare_receptor):
-                        raise RuntimeError(
-                            "ADFRsuite was not found. Install it manually and ensure prepare_receptor exists at:\n"
-                            f"{prepare_receptor}"
+                    prepare_receptor = platform_utils.find_adfr_prepare_receptor()
+                    if prepare_receptor is None:
+                        hint = (
+                            "Download the Windows installer from https://ccsb.scripps.edu/adfr/downloads/ and run it, "
+                            "then tick this row again (CODOC looks for prepare_receptor in $HOME/ADFRsuite-1.0 and in the "
+                            "ADFRsuite folders of Program Files)."
+                            if IS_WINDOWS else
+                            f"Install it manually and ensure prepare_receptor exists at:\n"
+                            f"{os.path.join(str(Path.home()), f'ADFRsuite-{pinned_version}', 'bin', 'prepare_receptor')}"
                         )
+                        raise RuntimeError("ADFRsuite was not found. " + hint)
                     self.log_signal.emit(f"ADFRsuite validated at {prepare_receptor}\n")
                 elif tool_key == "p2rank":
                     launcher = ensure_p2rank_installation(self.app_dir)

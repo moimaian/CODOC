@@ -12,7 +12,9 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QGuiApplication, QPixmap
 from PyQt5.QtWidgets import QApplication, QLabel, QProgressBar, QVBoxLayout, QWidget
 
-from MODULES.module_requirements import ensure_venv, install_python_packages, venv_paths, PYTHON_PACKAGES
+from MODULES.module_requirements import (
+    IS_WINDOWS, ensure_venv, ensure_windows_shortcuts, install_python_packages, venv_paths, PYTHON_PACKAGES,
+)
 from MODULES.projects import migrate_legacy_jobs_dir
 
 APP_NAME = "CODOC"
@@ -62,7 +64,16 @@ def ensure_desktop(dp_dir: str) -> None:
     """(Re)writes ~/.local/share/applications/CODOC.desktop whenever it is missing or differs from
     what this version expects (program path, icon - which moved from MIDIA/ to ICONS/ once - or
     the Terminal= line), so existing installations heal themselves on the next launch instead of
-    needing a manual edit of the desktop file."""
+    needing a manual edit of the desktop file.
+
+    Windows: the equivalent is CODOC.lnk on the Desktop and in the Start Menu (pythonw.exe of the
+    venv + CODOC.py, no console window)."""
+    if IS_WINDOWS:
+        try:
+            ensure_windows_shortcuts(os.path.join(dp_dir, "CODOC.py"))
+        except Exception:
+            pass
+        return
     try:
         if not os.path.isfile(DESKTOP_FILE) or Path(DESKTOP_FILE).read_text(encoding="utf-8") != _desktop_content(dp_dir):
             _write_desktop(dp_dir)
@@ -70,7 +81,13 @@ def ensure_desktop(dp_dir: str) -> None:
         pass
 
 
+# True if THIS run installed the essential packages: CODOC.py tried to import them before that, so it
+# has to restart once to use them (Windows, first run started without Install-CODOC.ps1).
+ESSENTIALS_INSTALLED_NOW = False
+
+
 def install_minimal_essentials(callback=None) -> None:
+    global ESSENTIALS_INSTALLED_NOW
     try:
         if os.path.isfile(MIN_MARKER):
             if callback:
@@ -80,6 +97,7 @@ def install_minimal_essentials(callback=None) -> None:
         result = install_python_packages(paths["python"], ESSENTIALS)
         ok = result.returncode == 0
         if ok:
+            ESSENTIALS_INSTALLED_NOW = True
             Path(MIN_MARKER).write_text("ok", encoding="utf-8")
         if callback:
             callback(ok, result.stdout or "done")
@@ -127,6 +145,7 @@ class SplashScreen(QWidget):
             "desktop_ok": False,
             "folders_ok": False,
             "essentials_installed": False,
+            "essentials_installed_now": False,
         }
         self._target = 0
         self._timer = QTimer(self)
@@ -174,6 +193,7 @@ class SplashScreen(QWidget):
 
     def _on_essentials_done(self, ok: bool, _text: str) -> None:
         self.status["essentials_installed"] = ok
+        self.status["essentials_installed_now"] = bool(ESSENTIALS_INSTALLED_NOW)
         self._set_target(100)
 
     def _finish(self) -> None:
