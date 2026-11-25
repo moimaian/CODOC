@@ -1496,6 +1496,14 @@ def _prepare_vina_gpu_windows(install_dir: str) -> None:
         kernel = os.path.join(install_dir, name)
         if os.path.isfile(kernel):
             os.remove(kernel)
+    # Vina-GPU+_K.exe reads the kernel sources as <name>.cpp (code_head, matrix, mutate_conf, quasi_newton), while the
+    # archive keeps them as <name>.cl. Without code_head the kernel loses its #include "kernel2.h" and OpenCL fails
+    # with "unknown type name 'atom_cl'".
+    kernels_dir = os.path.join(install_dir, "OpenCL", "src", "kernels")
+    for name in ("code_head", "matrix", "mutate_conf", "quasi_newton"):
+        source, wanted = os.path.join(kernels_dir, name + ".cl"), os.path.join(kernels_dir, name + ".cpp")
+        if os.path.isfile(source) and not os.path.isfile(wanted):
+            shutil.copyfile(source, wanted)
     example = os.path.join(install_dir, "input_file_example")
     receptor = os.path.join(example, "2bm2_protein.pdbqt")
     ligand = os.path.join(example, "2bm2_ligand.pdbqt")
