@@ -7,4 +7,4 @@ PATCH. A cada mudança que altere a versão, atualize o valor abaixo e
 adicione a entrada correspondente no topo de packaging/deb/changelog (mesmo
 número, os dois têm que bater)."""
 
-VERSAO = "2.2.0-1"
+VERSAO = "2.3.0-1"

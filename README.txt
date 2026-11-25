@@ -82,8 +82,9 @@ From then on, open CODOC with the shortcut. What is different on Windows:
     build the OpenCL kernels of YOUR graphics card (needs an up-to-date OpenCL driver). This build has no
     opencl_binary_path (it finds the kernels in its own folder) and no platform/device options and writes no progress file: it always uses the default OpenCL device, one group of
     ligands at a time, and the Docking monitor counts the finished groups instead.
-  - ADFRsuite 1.0 is installed by hand with its own Windows installer (https://ccsb.scripps.edu/adfr/downloads/);
-    CODOC finds prepare_receptor in %USERPROFILE%\ADFRsuite-1.0 or in the ADFRsuite folders of Program Files.
+  - ADFRsuite 1.0 is optional: without it STEP 2 uses Meeko. To use it, install it by hand with its own Windows
+    installer (https://ccsb.scripps.edu/adfr/downloads/); CODOC finds prepare_receptor in
+    %USERPROFILE%\ADFRsuite-1.0 or in the ADFRsuite folders of Program Files.
   - P2Rank runs through prank.bat (downloaded to %USERPROFILE%\p2rank_2.5.1 by Install Requirements).
   - The log of the session (Help > Terminal) is %LOCALAPPDATA%\CODOC\terminal.log.
   - Keep the project and ligand names short: Windows limits a full path to 260 characters.
@@ -114,7 +115,11 @@ check the components and click "Install Selected":
   - Boost 1.84 and Vina-GPU 2.1 custom fork (built from the archives of the BIN folder; if they are missing
     they are downloaded from the "deps-v1" release of the project repository; on Windows only the Vina-GPU
     archive is used, with its prebuilt executables, and there is no Boost);
-  - ADFRsuite 1.0 (prepare_receptor): install it manually in $HOME/ADFRsuite-1.0; the installer only checks it;
+  - ADFRsuite 1.0 (prepare_receptor), optional: install it manually in $HOME/ADFRsuite-1.0 (the installer only
+    checks it). STEP 2 uses it to write the receptor PDBQT when it is installed and, when it is not (or it
+    fails), uses Meeko (mk_prepare_receptor, the same pip package that prepares the ligands). Either way the
+    protonation is done by PDB2PQR/PROPKA first, and the PDBQT writer used is shown in the message and in
+    protonation_log.txt;
   - P2Rank 2.5.1 (optional, pocket search in STEP 2): needs a Java runtime 17 or newer. Install Requirements
     installs Java (apt; winget on Windows) and downloads P2Rank to $HOME/p2rank_2.5.1 (or use the P2RANK_HOME
     variable).

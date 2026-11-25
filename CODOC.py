@@ -168,6 +168,7 @@ from MODULES.module_target_prepare import (
     TargetPrepareError,
     detect_pockets_p2rank,
     find_pdb2pqr,
+    meeko_available as module_target_prepare_meeko_available,
     prepare_receptor_with_protonation,
     summarize_pka_table,
 )
@@ -2319,6 +2320,25 @@ class LigandSourcesDialog(QFileDialog):
             QDialog.accept(self)
 
 
+class _TabScrollArea(QScrollArea):
+    """Wraps the content of a step tab so that it keeps its natural size and gets scroll bars when the window is
+    smaller (a laptop screen, a maximized window with Windows display scaling). Without it the tab's minimum height
+    pushed the window past the bottom of the screen and squeezed buttons and spin boxes."""
+
+    def __init__(self, content: QWidget) -> None:
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidget(content)
+
+    def sizeHint(self) -> QSize:          # the window still opens as tall and wide as the content needs
+        hint = self.widget().sizeHint()
+        return QSize(hint.width() + 2 * self.frameWidth(), hint.height() + 2 * self.frameWidth())
+
+    def minimumSizeHint(self) -> QSize:   # ... but it can be made much smaller; the rest is reached by scrolling
+        return QSize(300, 240)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -2792,7 +2812,7 @@ class MainWindow(QMainWindow):
         for idx, (name, version) in enumerate(sw_items):
             row = idx // cols
             col = (idx % cols) * 3
-            ok = version != "not installed" and "needed" not in version
+            ok = (version != "not installed" and "needed" not in version) or "Meeko" in version
             name_label = QLabel(name)
             name_label.setStyleSheet("color:#6E8CA8;font-size:9pt;")
             version_label = QLabel(version)
@@ -3192,7 +3212,10 @@ class MainWindow(QMainWindow):
             "vina_split",
             version_or_availability("vina_split", ["--version"], vina_split_file, binary_path=vina_split_file),
         ))
-        rows.append(("ADFRsuite", "available" if platform_utils.find_adfr_prepare_receptor() else "not installed"))
+        if platform_utils.find_adfr_prepare_receptor():
+            rows.append(("ADFRsuite", "available"))
+        else:           # optional: without it STEP 2 writes the receptor PDBQT with Meeko
+            rows.append(("ADFRsuite", "not installed (Meeko is used)" if module_target_prepare_meeko_available() else "not installed"))
         rows.append(("Vina-GPU", get_vina_gpu_version() or "not installed"))
         # PDB2PQR (protonation) and PROPKA (the pKa predictor it calls) are separate packages with their own versions
         try:
@@ -3379,7 +3402,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(0, 2))
-        config_tab_index = self.tabs.addTab(tab, "")
+        config_tab_index = self.tabs.addTab(_TabScrollArea(tab), "")
         self._tr("tab_config", lambda txt, i=config_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_previous_projects()
         self._sync_project_mode()
@@ -3720,7 +3743,7 @@ class MainWindow(QMainWindow):
         add_centered_group(self.txt_ligand_log)
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(1, 3))
-        step2_tab_index = self.tabs.addTab(tab, "")
+        step2_tab_index = self.tabs.addTab(_TabScrollArea(tab), "")
         self._tr("tab_step1", lambda txt, i=step2_tab_index: self.tabs.setTabText(i, txt))
         self._sync_lig_conversion_settings_state()
         self._refresh_ligand_monitor()
@@ -4040,7 +4063,7 @@ class MainWindow(QMainWindow):
         add_centered_group(self.txt_targets)
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(2, 4))
-        step3_tab_index = self.tabs.addTab(tab, "")
+        step3_tab_index = self.tabs.addTab(_TabScrollArea(tab), "")
         self._tr("tab_step2", lambda txt, i=step3_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_targets_summary()
         self._populate_prepared_targets()
@@ -4182,7 +4205,7 @@ class MainWindow(QMainWindow):
         add_centered_group(self.txt_docking_log)
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(3, 5))
-        step4_tab_index = self.tabs.addTab(tab, "")
+        step4_tab_index = self.tabs.addTab(_TabScrollArea(tab), "")
         self._tr("tab_step3", lambda txt, i=step4_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_result_selectors()
 
@@ -4316,7 +4339,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
         layout.addLayout(self._nav_buttons_row(4, None))
-        step5_tab_index = self.tabs.addTab(tab, "")
+        step5_tab_index = self.tabs.addTab(_TabScrollArea(tab), "")
         self._tr("tab_step4", lambda txt, i=step5_tab_index: self.tabs.setTabText(i, txt))
         self._refresh_result_selectors()
         self._refresh_results_project_combo()
@@ -4903,7 +4926,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     APP_NAME,
-                    f"Target prepared in {target_dir}.\n\n{pka_summary}\n\nFull PROPKA/PDB2PQR log saved to:\n{prep_result.log_path}",
+                    f"Target prepared in {target_dir}.\n\nReceptor PDBQT written by: {prep_result.engine}.\n\n{pka_summary}\n\nFull PROPKA/PDB2PQR log saved to:\n{prep_result.log_path}",
                 )
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Target preparation failed:\n{exc}")

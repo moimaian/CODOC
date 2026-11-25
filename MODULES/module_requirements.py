@@ -1806,7 +1806,8 @@ class RequirementsInstaller(cast(Any, QDialog)):
                             f"Install it manually and ensure prepare_receptor exists at:\n"
                             f"{os.path.join(str(Path.home()), f'ADFRsuite-{pinned_version}', 'bin', 'prepare_receptor')}"
                         )
-                        raise RuntimeError("ADFRsuite was not found. " + hint)
+                        raise RuntimeError("ADFRsuite was not found. It is optional: without it STEP 2 writes the receptor PDBQT with Meeko "
+                                           "(tick meeko in Python Libraries). " + hint)
                     self.log_signal.emit(f"ADFRsuite validated at {prepare_receptor}\n")
                 elif tool_key == "p2rank":
                     launcher = ensure_p2rank_installation(self.app_dir)

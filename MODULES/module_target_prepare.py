@@ -18,10 +18,13 @@ own.
 from __future__ import annotations
 
 import csv
+import importlib.util
+import math
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +61,7 @@ class ReceptorPrepareResult:
     pka_table: List[ResiduePka]
     log: str
     log_path: Optional[str] = None
+    engine: str = ""            # what wrote the PDBQT: "ADFRsuite prepare_receptor" or "Meeko mk_prepare_receptor"
 
 
 def _which_or_none(name: str) -> Optional[str]:
@@ -88,16 +92,92 @@ def find_pdb2pqr(venv_bin_dir: Optional[str] = None) -> str:
     )
 
 
-def find_prepare_receptor() -> str:
-    path = platform_utils.find_adfr_prepare_receptor()
-    if path is None:
-        expected = os.path.join(str(Path.home()), "ADFRsuite-1.0", "bin", "prepare_receptor")
-        raise TargetPrepareError(
-            f"prepare_receptor was not found at {expected}."
-            + (" Install ADFRsuite 1.0 (https://ccsb.scripps.edu/adfr/downloads/): CODOC also looks in the ADFRsuite "
-               "folders of Program Files." if platform_utils.IS_WINDOWS else "")
-        )
-    return path
+ENGINE_ADFR = "ADFRsuite prepare_receptor"
+ENGINE_MEEKO = "Meeko mk_prepare_receptor"
+
+# The SG-SG distance of a disulfide bridge is 2.05 A; crystal structures and the PDB2PQR output show up to ~2.6 A.
+_DISULFIDE_MAX_DISTANCE = 2.6
+
+
+def meeko_available() -> bool:
+    """True when the Meeko package (already used for the ligands) can prepare the receptor too."""
+    return importlib.util.find_spec("meeko") is not None
+
+
+def available_receptor_engines() -> List[str]:
+    """The PDBQT writers that can run now, in the order CODOC tries them: ADFRsuite when it is installed (the
+    reference tool), otherwise - or when it fails - Meeko, which needs nothing beyond the pip packages."""
+    engines = []
+    if platform_utils.find_adfr_prepare_receptor():
+        engines.append(ENGINE_ADFR)
+    if meeko_available():
+        engines.append(ENGINE_MEEKO)
+    return engines
+
+
+def _venv_python() -> str:
+    python = os.path.join(_venv_scripts_dir(), "python.exe" if platform_utils.IS_WINDOWS else "python")
+    return python if os.path.isfile(python) else sys.executable
+
+
+def _protein_only_pdb(protonated_pdb: str, destination: str) -> int:
+    """Copy of the PDB2PQR output for Meeko: only ATOM records (PDB2PQR keeps the co-crystallised ligands as
+    HETATM, which Meeko refuses; ADFRsuite drops them by itself) and disulfide cysteines named CYX without
+    their HG, as Meeko needs. Returns the number of disulfide bridges found."""
+    with open(protonated_pdb, "r", encoding="utf-8", errors="replace") as handle:
+        lines = [line for line in handle if not line.startswith("HETATM")]
+    sulfurs = {}
+    for line in lines:
+        if line.startswith("ATOM") and line[12:16].strip() == "SG" and line[17:20] == "CYS":
+            sulfurs[(line[21], line[22:27])] = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+    keys = list(sulfurs)
+    bridged = set()
+    for i, first in enumerate(keys):
+        for second in keys[i + 1:]:
+            if math.dist(sulfurs[first], sulfurs[second]) <= _DISULFIDE_MAX_DISTANCE:
+                bridged.update((first, second))
+    cleaned = []
+    for line in lines:
+        if line.startswith("ATOM") and (line[21], line[22:27]) in bridged:
+            if line[12:16].strip() == "HG":
+                continue
+            line = line[:17] + "CYX" + line[20:]
+        cleaned.append(line)
+    with open(destination, "w", encoding="utf-8") as handle:
+        handle.writelines(cleaned)
+    return len(bridged) // 2
+
+
+def _write_pdbqt_with_adfr(protonated_pdb: str, output_pdbqt_path: str) -> Tuple[bool, str]:
+    prepare_receptor = platform_utils.find_adfr_prepare_receptor()
+    if prepare_receptor is None:
+        return False, "ADFRsuite prepare_receptor is not installed."
+    # prepare_receptor (a shell/Python 2 script) fails when a path has a space - a project name never has one, but
+    # the folder of a Windows user may -, so it writes inside the temporary folder and the file is copied after.
+    scratch = os.path.join(os.path.dirname(protonated_pdb), "adfr_receptor.pdbqt")
+    result = _run([prepare_receptor, "-r", protonated_pdb, "-o", scratch, "-A", "checkhydrogens", "-e"])
+    ok = result.returncode == 0 and os.path.isfile(scratch)
+    if ok:
+        shutil.copyfile(scratch, output_pdbqt_path)
+    return ok, result.stdout.strip()
+
+
+def _write_pdbqt_with_meeko(protonated_pdb: str, output_pdbqt_path: str, work_dir: str) -> Tuple[bool, str]:
+    if not meeko_available():
+        return False, "Meeko is not installed (Install Requirements > Python Libraries > meeko)."
+    protein_pdb = os.path.join(work_dir, "protonated_protein_only.pdb")
+    bridges = _protein_only_pdb(protonated_pdb, protein_pdb)
+    if os.path.isfile(output_pdbqt_path):
+        os.remove(output_pdbqt_path)
+    # Charges are Gasteiger, as in AutoDock; the heavy-atom coordinates and hydrogens are the ones PDB2PQR placed.
+    code = "import sys; from meeko.cli.mk_prepare_receptor import main; sys.argv[0] = 'mk_prepare_receptor'; sys.exit(main())"
+    result = _run([_venv_python(), "-c", code, "--read_pdb", protein_pdb, "-o", os.path.join(work_dir, "meeko_receptor"),
+                   "-p", output_pdbqt_path])
+    ok = result.returncode == 0 and os.path.isfile(output_pdbqt_path)
+    text = result.stdout.strip()
+    if bridges:
+        text += f"\n[{bridges} disulfide bridge(s) renamed CYX before Meeko]"
+    return ok, text
 
 
 def _run(cmd: List[str], env: Optional[dict] = None) -> subprocess.CompletedProcess:
@@ -195,17 +275,22 @@ def prepare_receptor_with_protonation(
          waters and any non-protein heteroatoms (ligands, cofactors, ions)
          and rebuilds hydrogens according to the per-residue pKa computed
          from the 3D microenvironment.
-      3. Hand the protonated structure to ADFRsuite's ``prepare_receptor``
-         (``-A checkhydrogens`` keeps the hydrogens just placed, ``-e`` is
-         kept as a safety net) to assign Gasteiger charges, AutoDock4 atom
-         types and write the final PDBQT -- i.e. every function
-         ``prepare_receptor4.py`` performed before.
+      3. Write the final PDBQT (Gasteiger charges, AutoDock4 atom types) with
+         ADFRsuite's ``prepare_receptor`` (``-A checkhydrogens`` keeps the
+         hydrogens just placed, ``-e`` is kept as a safety net) when it is
+         installed and, if it is not or it fails, with Meeko's
+         ``mk_prepare_receptor``. ``result.engine`` tells which one did.
     """
     if not os.path.isfile(input_path):
         raise TargetPrepareError(f"Target file not found: {input_path}")
 
     pdb2pqr = find_pdb2pqr(venv_bin_dir)
-    prepare_receptor = find_prepare_receptor()
+    engines = available_receptor_engines()
+    if not engines:
+        raise TargetPrepareError(
+            "No program is available to write the receptor PDBQT. Install the Meeko package (Install Requirements > "
+            "Python Libraries) or ADFRsuite (https://ccsb.scripps.edu/adfr/downloads/)."
+        )
 
     work_dir = tempfile.mkdtemp(prefix="codoc_target_prep_")
     try:
@@ -231,26 +316,30 @@ def prepare_receptor_with_protonation(
 
         pka_table = _parse_pka_table(pdb2pqr_result.stdout, ph)
 
-        receptor_cmd = [
-            prepare_receptor,
-            "-r", protonated_pdb,
-            "-o", output_pdbqt_path,
-            "-A", "checkhydrogens",
-            "-e",
-        ]
-        receptor_result = _run(receptor_cmd)
-        if receptor_result.returncode != 0 or not os.path.isfile(output_pdbqt_path):
-            raise TargetPrepareError(
-                f"prepare_receptor failed while writing the PDBQT:\n{receptor_result.stdout}"
-            )
+        # Step 3: the PDBQT (Gasteiger charges, AutoDock atom types, merged non-polar hydrogens). ADFRsuite first when
+        # it is installed; if it is missing or fails, Meeko. Which one wrote the file goes to the log and the message.
+        writers = {ENGINE_ADFR: lambda: _write_pdbqt_with_adfr(protonated_pdb, output_pdbqt_path),
+                   ENGINE_MEEKO: lambda: _write_pdbqt_with_meeko(protonated_pdb, output_pdbqt_path, work_dir)}
+        engine, attempts = "", []
+        for candidate in engines:
+            ok, text = writers[candidate]()
+            if ok:
+                engine = candidate
+                receptor_output = text
+                break
+            attempts.append(f"[{candidate}] failed:\n{text}")
+        if not engine:
+            raise TargetPrepareError("The receptor PDBQT could not be written:\n\n" + "\n\n".join(attempts))
+        if attempts:
+            receptor_output = "\n\n".join(attempts) + f"\n\n[{engine}] used instead:\n{receptor_output}"
 
         log_text = "\n".join(
             [
                 f"[PDB2PQR/PROPKA] Protonation at pH {ph:.2f}",
                 pdb2pqr_result.stdout.strip(),
                 "",
-                "[prepare_receptor] PDBQT generation",
-                receptor_result.stdout.strip(),
+                f"[{engine}] PDBQT generation",
+                receptor_output,
                 "",
                 summarize_pka_table(pka_table, ph),
             ]
@@ -270,6 +359,7 @@ def prepare_receptor_with_protonation(
             pka_table=pka_table,
             log=log_text,
             log_path=saved_log_path,
+            engine=engine,
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)

@@ -1,3 +1,29 @@
+codoc (2.3.0-1) unstable; urgency=low
+
+  * Versão MINOR: STEP 2 deixa de exigir o ADFRsuite.
+    - O PDBQT do receptor (cargas de Gasteiger e tipos do AutoDock) é escrito
+      pelo prepare_receptor do ADFRsuite quando ele está instalado e, se não
+      está ou se falha, pelo mk_prepare_receptor do Meeko (o mesmo pacote pip
+      que prepara os ligantes). A protonação continua sendo do PDB2PQR/PROPKA.
+      A mensagem de Prepare target e o protonation_log.txt dizem qual programa
+      escreveu o arquivo.
+    - Para o Meeko o PDB protonado perde os HETATM (ligantes, que ele recusa) e
+      as pontes dissulfeto (SG-SG até 2,6 A) viram CYX sem HG. Nos testes (8ARJ
+      e 36OL) o redocking teve o mesmo resultado com os dois, e numa triagem de
+      40 ligantes a correlação de Spearman entre as energias foi de 0,97 e
+      0,99. O ADFRsuite passou a gravar numa pasta temporária (falhava com
+      espaço no caminho). No Windows o ADFRsuite continua opcional e manual.
+    - HOME: o ADFRsuite sem instalação aparece como "not installed (Meeko is
+      used)".
+    - Abas CONFIG e STEP 1 a STEP 4 com barras de rolagem: em janela pequena ou
+      maximizada com escala de tela do Windows (menos altura útil que o conteúdo
+      da aba), botões e spinboxes não ficam mais achatados e a caixa de status
+      da STEP 4 não passa do fim da janela; o conteúdo se alcança rolando.
+    - Manuais em português e inglês atualizados (instalação no Windows,
+      ADFRsuite opcional e escrita do PDBQT pelo Meeko).
+
+ -- Moisés Maia <moimaian@gmail.com>  Wed, 25 Nov 2026 18:00:00 -0300
+
 codoc (2.2.0-1) unstable; urgency=low
 
   * Versão MINOR: o CODOC passa a rodar também no Windows 10/11 (64 bits).
